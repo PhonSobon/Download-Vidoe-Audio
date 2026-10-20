@@ -1,9 +1,10 @@
 import os
 import re
+import zipfile
 import uuid
 import threading
 import time
-from flask import Flask, request, jsonify, send_from_directory, render_template
+from flask import Flask, request, jsonify, send_from_directory, send_file, render_template
 from werkzeug.utils import secure_filename
 
 import yt_dlp
@@ -24,8 +25,15 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# In-memory job tracker: job_id -> {"status": ..., "filename": ..., "error": ...}
+# In-memory job tracker: job_id -> {"status": ..., "filename": ..., "error": ...,
+# "progress": 0-100, "title": ...}
 JOBS = {}
+
+# When many links are submitted at once, only this many download at the same
+# time; the rest wait in "queued" until a slot frees up. Keeps the machine and
+# the network (and YouTube's rate limits) from being overwhelmed.
+MAX_PARALLEL_DOWNLOADS = 3
+DOWNLOAD_SLOTS = threading.BoundedSemaphore(MAX_PARALLEL_DOWNLOADS)
 
 # Generic "is this a real URL" check. We don't restrict to one site anymore --
 # yt-dlp itself supports YouTube, Facebook, Instagram, TikTok, X/Twitter,
@@ -66,6 +74,27 @@ if FFMPEG_PATH:
 def run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None):
     """fmt is 'mp3' or 'mp4'. limit_minutes, if set, downloads only the
     first N minutes of the source video instead of the whole thing."""
+    with DOWNLOAD_SLOTS:
+        _run_download(job_id, url, fmt, limit_minutes)
+
+
+def _make_progress_hook(job_id: str):
+    def hook(d):
+        job = JOBS[job_id]
+        info = d.get("info_dict") or {}
+        if info.get("title") and not job.get("title"):
+            job["title"] = info["title"]
+        if d.get("status") == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
+            if total:
+                job["progress"] = round(d.get("downloaded_bytes", 0) * 100 / total, 1)
+        elif d.get("status") == "finished":
+            job["progress"] = 100
+            job["status"] = "processing"
+    return hook
+
+
+def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None):
     JOBS[job_id]["status"] = "downloading"
     unique_name = f"{job_id}"
     outtmpl = os.path.join(DOWNLOAD_DIR, f"{unique_name}.%(ext)s")
@@ -73,6 +102,7 @@ def run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None):
     try:
         ydl_opts = dict(COMMON_OPTS)
         ydl_opts["outtmpl"] = outtmpl
+        ydl_opts["progress_hooks"] = [_make_progress_hook(job_id)]
 
         if fmt == "mp3":
             ydl_opts.update({
@@ -175,7 +205,8 @@ def generate():
                 return jsonify({"error": "Time limit must be a number of minutes."}), 400
 
         job_id = uuid.uuid4().hex[:12]
-        JOBS[job_id] = {"status": "queued", "filename": None, "error": None}
+        JOBS[job_id] = {"status": "queued", "filename": None, "error": None,
+                        "progress": 0, "title": None, "url": url}
 
         thread = threading.Thread(
             target=run_download, args=(job_id, url, fmt, limit_minutes), daemon=True
@@ -186,6 +217,50 @@ def generate():
     except Exception as e:
         # Catch-all so the browser always gets JSON, never an HTML crash page
         return jsonify({"error": f"Unexpected server error: {e}"}), 500
+
+
+@app.route("/expand", methods=["POST"])
+def expand():
+    """Turn a playlist link into the list of video links inside it, so the
+    page can queue each one as its own download. A plain video link comes
+    back as a one-item list."""
+    data = request.get_json(silent=True) or {}
+    url = (data.get("url") or "").strip()
+    if not is_valid_url(url):
+        return jsonify({"error": "Please paste a valid link."}), 400
+
+    ydl_opts = dict(COMMON_OPTS)
+    ydl_opts.update({
+        "noplaylist": False,
+        # Only list the entries; don't resolve every video (that's slow).
+        "extract_flat": "in_playlist",
+        "skip_download": True,
+    })
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as e:
+        return jsonify({"error": f"Couldn't read this playlist: {e}"}), 400
+
+    entries = info.get("entries")
+    if entries is None:
+        return jsonify({"title": info.get("title"), "videos": [{"url": url, "title": info.get("title")}]})
+
+    videos = []
+    for entry in entries:
+        if not entry:
+            continue
+        title = entry.get("title")
+        # Deleted/private videos still appear in playlists but can't be downloaded.
+        if title in ("[Deleted video]", "[Private video]"):
+            continue
+        video_url = entry.get("url") or entry.get("webpage_url")
+        if not video_url and entry.get("id"):
+            video_url = f"https://www.youtube.com/watch?v={entry['id']}"
+        if video_url:
+            videos.append({"url": video_url, "title": title})
+
+    return jsonify({"title": info.get("title"), "videos": videos})
 
 
 @app.route("/status/<job_id>")
@@ -210,6 +285,43 @@ def download(job_id):
         as_attachment=True,
         download_name=f"{title}{extension}",
     )
+
+
+@app.route("/download_zip")
+def download_zip():
+    """Bundle several finished jobs into one .zip, e.g.
+    /download_zip?ids=abc123,def456. Lets the user grab a whole batch in one
+    click instead of the browser blocking a dozen separate downloads."""
+    ids = [i for i in (request.args.get("ids") or "").split(",") if i]
+    jobs = [JOBS[i] for i in ids if JOBS.get(i, {}).get("status") == "done"]
+    if not jobs:
+        return jsonify({"error": "None of those files are ready"}), 400
+
+    # Zips are temporary bundles of files already on disk. A zip can't be
+    # deleted while it's still streaming (Windows locks it), so instead sweep
+    # away ones from earlier requests that are old enough to be finished.
+    for f in os.listdir(DOWNLOAD_DIR):
+        path = os.path.join(DOWNLOAD_DIR, f)
+        if f.startswith("batch-") and f.endswith(".zip") and time.time() - os.path.getmtime(path) > 3600:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    zip_path = os.path.join(DOWNLOAD_DIR, f"batch-{uuid.uuid4().hex[:12]}.zip")
+    used_names = set()
+    # ZIP_STORED: mp3/mp4 are already compressed, so deflating just burns CPU.
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as zf:
+        for job in jobs:
+            title = secure_filename(job.get("title") or "video") or "video"
+            extension = os.path.splitext(job["filename"])[1]
+            name, n = f"{title}{extension}", 2
+            while name in used_names:
+                name, n = f"{title} ({n}){extension}", n + 1
+            used_names.add(name)
+            zf.write(os.path.join(DOWNLOAD_DIR, job["filename"]), arcname=name)
+
+    return send_file(zip_path, as_attachment=True, download_name="downloads.zip")
 
 
 if __name__ == "__main__":

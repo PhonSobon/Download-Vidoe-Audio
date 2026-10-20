@@ -54,8 +54,19 @@ python app.py
 
 Then open your browser to: **http://127.0.0.1:5000**
 
-Paste a YouTube link, pick MP3 or MP4, click Generate, wait for it to
-finish, then click the download link that appears.
+Paste one or more links (one per line), pick MP3 or MP4, and click
+**Download**. Each link appears in the queue with its own progress bar.
+Click **Save** on any finished item, or **Download all (.zip)** to grab the
+whole batch as one file.
+
+**Whole playlist:** paste the playlist link (`youtube.com/playlist?list=...`,
+or a video opened from a playlist, `watch?v=...&list=...`). Every video in
+it is added to the queue. Deleted/private videos are skipped. YouTube "Mix"
+links (`list=RD...`) are endless auto-playlists, so only that one video is
+downloaded.
+
+Up to 3 links download at once; the rest wait their turn. To change that,
+edit `MAX_PARALLEL_DOWNLOADS` in `app.py`.
 
 ## Notes
 
