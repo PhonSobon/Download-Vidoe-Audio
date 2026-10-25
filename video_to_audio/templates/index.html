@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video &amp; Audio Downloader</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 3v10.17l3.59-3.58L17 11l-5 5-5-5 1.41-1.41L11 13.17V3h1zM5 19h14v2H5z"/></svg>
+    </div>
+    <div>
+      <h1>Video &amp; Audio Downloader</h1>
+      <p>Paste one or many links, then save them as MP3 audio or MP4 video.</p>
+    </div>
+  </header>
+
+  <section class="card">
+    <label class="field" for="urlInput">Paste a link, then press Enter</label>
+    <div class="add-row">
+      <input type="text" id="urlInput" spellcheck="false" autocomplete="off"
+        placeholder="https://www.youtube.com/watch?v=...  or a playlist link">
+      <button id="addBtn">Add</button>
+    </div>
+
+    <div class="label-row pending-head">
+      <span class="field">Your links</span>
+      <span class="count"><span id="linkCount">0</span> · <button class="link-btn" id="clearPending">Clear</button></span>
+    </div>
+    <ol id="pending"></ol>
+    <div class="pending-empty" id="pendingEmpty">No links yet. Copy a link on YouTube, paste it above, press Enter, and repeat.</div>
+
+    <div class="options">
+      <div>
+        <span class="sub-label">Format</span>
+        <div class="segmented">
+          <label><input type="radio" name="fmt" value="mp3" checked>MP3 audio</label>
+          <label><input type="radio" name="fmt" value="mp4">MP4 video</label>
+        </div>
+      </div>
+      <div>
+        <label class="sub-label" for="limitMinutes">Only first N minutes (optional)</label>
+        <input type="number" id="limitMinutes" min="0" step="0.5" placeholder="Full length">
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="primary" id="go">Download</button>
+    </div>
+    <div id="formError"></div>
+  </section>
+
+  <section class="card">
+    <div class="queue-head">
+      <h2>Queue<span class="summary" id="summary"></span></h2>
+      <div class="tools">
+        <button class="small" id="retryFailed" style="display:none">Retry failed</button>
+        <button class="small" id="clearDone" disabled>Clear finished</button>
+        <a class="btn" id="zipAll" href="#" style="display:none">Download all (.zip)</a>
+      </div>
+    </div>
+    <div class="empty" id="empty">Nothing here yet. Paste some links above to get started.</div>
+    <ul id="queue"></ul>
+  </section>
+
+  <section class="card">
+    <div class="hf-head">
+      <h2>Push to Hugging Face</h2>
+      <p>Each push adds a new Parquet file of your finished MP3s to the dataset (existing files are kept), and adds each source video or page to the References table in its README.</p>
+    </div>
+    <div class="options">
+      <div>
+        <label class="sub-label" for="hfRepo">Dataset (username/name)</label>
+        <input type="text" id="hfRepo" spellcheck="false" autocomplete="off" placeholder="your-username/my-audio">
+      </div>
+      <div>
+        <label class="sub-label" for="hfToken">HF_TOKEN (write access, needed for private datasets)</label>
+        <input type="password" id="hfToken" autocomplete="off" placeholder="hf_…">
+      </div>
+    </div>
+    <label class="check"><input type="checkbox" id="hfPrivate" checked> Private dataset (creates it private if it doesn't exist yet)</label>
+    <div class="hint">Get a token with <b>Write</b> permission at <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener">huggingface.co/settings/tokens</a>. Leave it blank only if you've run <code>hf auth login</code> or set the <code>HF_TOKEN</code> environment variable.</div>
+    <div class="actions">
+      <button class="primary" id="hfPush" disabled>Push MP3s to Hugging Face</button>
+    </div>
+    <div id="hfResult"></div>
+  </section>
+
+  <footer>Only download content you have the rights to. Up to 3 links download at the same time; the rest wait their turn.</footer>
+</div>
+
+<template id="itemTpl">
+  <li class="item">
+    <div class="icon"></div>
+    <div class="meta">
+      <div class="title"></div>
+      <div class="line"></div>
+      <div class="bar"><span></span></div>
+    </div>
+    <div class="right"></div>
+  </li>
+</template>
+
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

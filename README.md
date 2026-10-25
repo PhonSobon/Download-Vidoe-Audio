@@ -19,7 +19,7 @@ on content that's publicly viewable without logging in.
 
 ## 1. Requirements
 
-- Python 3.9+ installed
+- Python 3.10+ installed
 - **ffmpeg** installed and available on your PATH (needed to convert to MP3
   and to merge video+audio for MP4)
 
@@ -49,10 +49,11 @@ pip install -r requirements.txt
 ## 3. Run it
 
 ```bash
-python app.py
+python run.py
 ```
 
-Then open your browser to: **http://127.0.0.1:5000**
+(`python -m video_to_audio` does the same.) Then open your browser to:
+**http://127.0.0.1:5000**
 
 Paste one or more links (one per line), pick MP3 or MP4, and click
 **Download**. Each link appears in the queue with its own progress bar.
@@ -65,8 +66,133 @@ it is added to the queue. Deleted/private videos are skipped. YouTube "Mix"
 links (`list=RD...`) are endless auto-playlists, so only that one video is
 downloaded.
 
-Up to 3 links download at once; the rest wait their turn. To change that,
-edit `MAX_PARALLEL_DOWNLOADS` in `app.py`.
+Up to 3 links download at once; the rest wait their turn.
+
+### Settings
+
+Each setting in [video_to_audio/config.py](video_to_audio/config.py) can be
+changed with an environment variable of the same name before starting the
+app:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `MAX_PARALLEL_DOWNLOADS` | `3` | Links that download at the same time |
+| `DOWNLOAD_DIR` | `downloads/` in this folder | Where finished files are kept |
+| `HOST` / `PORT` | `127.0.0.1` / `5000` | Address the server listens on |
+| `HF_TOKEN` | not set | Hugging Face token used when the HF_TOKEN box is left blank |
+
+For example, on Windows PowerShell: `$env:PORT = "8080"; python run.py`
+
+## 4. Push audio to Hugging Face (optional)
+
+After your MP3s finish, the **Push to Hugging Face** panel uploads them to a
+Hugging Face **dataset** as **Parquet**. Each push adds a **new** Parquet
+file, and files from earlier pushes are never replaced. Each clip also gets
+a row in the **References** table in the dataset README, linking back to the
+YouTube video or web page it came from.
+
+1. Create an access token with **Write** permission at
+   https://huggingface.co/settings/tokens
+2. In the panel, enter the dataset name (e.g. `your-username/my-audio`, a
+   new or an existing one) and paste the token into the **HF_TOKEN** box.
+   A token is required for private datasets. You can leave the box blank
+   only if you've already run `hf auth login` or set the `HF_TOKEN`
+   environment variable before starting the app.
+3. Tick **Private dataset** to create a new dataset as private (an existing
+   dataset keeps its current visibility).
+4. Click **Push N MP3s to Hugging Face**.
+
+What the dataset looks like after three pushes:
+
+```
+README.md                                  ← References table grows each push
+data/
+  train-20261025-093000-a1b2c3.parquet     ← push 1
+  train-20261026-141500-d4e5f6.parquet     ← push 2
+  train-20261101-080000-0789ab.parquet     ← push 3
+```
+
+Columns in every Parquet file:
+
+| Column | Example |
+| --- | --- |
+| `audio` | the MP3 (plays in the Hugging Face dataset viewer) |
+| `title` | `Rick Astley - Never Gonna Give You Up (Official Video)` |
+| `source_url` | `https://www.youtube.com/watch?v=dQw4w9WgXcQ` |
+| `platform` | `Youtube` (for an ordinary website: its extractor name, or `Generic`) |
+| `channel` / `channel_url` | `Rick Astley` / `https://www.youtube.com/channel/UCuAXFkgsw1L7xaCfnd5JJOw` |
+| `upload_date` | `20091025` |
+| `duration_seconds` | `213.0` |
+| `clip_minutes` | empty, or `5.0` if you used "Only first N minutes" |
+| `reference` | `Rick Astley - Never Gonna Give You Up (Official Video) by Rick Astley (Youtube). https://www.youtube.com/watch?v=dQw4w9WgXcQ` |
+| `downloaded_at` | `2026-10-25T09:30:00+00:00` |
+
+Example References section added to the dataset README:
+
+```markdown
+## References
+
+Original source of every clip in this dataset.
+
+<!-- references:start -->
+| Title | Source | Platform | Channel | Parquet file |
+| --- | --- | --- | --- | --- |
+| Rick Astley - Never Gonna Give You Up (Official Video) | [https://www.youtube.com/watch?v=dQw4w9WgXcQ](https://www.youtube.com/watch?v=dQw4w9WgXcQ) | Youtube | Rick Astley | `data/train-20261025-093000-a1b2c3.parquet` |
+| My page audio | [https://example.com/talk](https://example.com/talk) | Generic |  | `data/train-20261026-141500-d4e5f6.parquet` |
+<!-- references:end -->
+```
+
+If the dataset already has a README, your text is kept: the References
+section is added at the end the first time, and later pushes only add rows
+between the two `references` markers. For a new dataset the app also writes
+a README that tells Hugging Face to load `data/train-*.parquet`.
+
+Load every push together in Python (`pip install datasets torchcodec`):
+
+```python
+from datasets import load_dataset
+
+ds = load_dataset("your-username/my-audio", split="train")
+row = ds[0]
+print(row["title"], row["source_url"])
+print(row["audio"]["sampling_rate"])
+```
+
+> If you push into a dataset that already has its own Parquet files in
+> `data/`, its columns should match the ones above, otherwise Hugging Face
+> can't load the old and new files as one table.
+
+## Project structure
+
+```
+Convert-video-to-audio/
+├── run.py                    # start the app: python run.py
+├── pyproject.toml            # package metadata and dependencies
+├── requirements.txt          # runtime dependencies
+├── requirements-dev.txt      # + test dependencies
+├── video_to_audio/           # the application package
+│   ├── __init__.py           # create_app() application factory
+│   ├── __main__.py           # python -m video_to_audio
+│   ├── config.py             # settings (overridable by environment variables)
+│   ├── downloader.py         # yt-dlp download jobs and playlist expansion
+│   ├── huggingface.py        # Parquet build + push to a Hugging Face dataset
+│   ├── routes.py             # HTTP endpoints
+│   ├── templates/index.html  # the page
+│   └── static/
+│       ├── css/style.css
+│       └── js/app.js
+├── tests/                    # pytest tests (no network needed)
+└── downloads/                # finished files (created on first run, not in git)
+```
+
+## Development
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+The tests use a fake Hugging Face repo, so they never upload anything.
 
 ## Notes
 
@@ -83,7 +209,7 @@ edit `MAX_PARALLEL_DOWNLOADS` in `app.py`.
   ```
   pip install -U yt-dlp
   ```
-  then restart `python app.py` and try again. The app already applies a
+  then restart `python run.py` and try again. The app already applies a
   fallback client mode that resolves most 403 errors as long as yt-dlp
   itself is current.
 - If yt-dlp stops working over time in general, the same update command

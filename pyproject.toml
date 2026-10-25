@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video-to-audio"
+version = "1.0.0"
+description = "Local web app that converts video links to MP3/MP4 and can push the MP3s to a Hugging Face dataset."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "flask",
+    "yt-dlp",
+    "imageio-ffmpeg",
+    "huggingface_hub",
+    "pyarrow",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "datasets"]
+
+[project.scripts]
+video-to-audio = "video_to_audio.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["video_to_audio*"]
+
+[tool.setuptools.package-data]
+video_to_audio = ["templates/*", "static/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

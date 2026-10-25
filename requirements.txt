@@ -1,3 +1,5 @@
 flask
 yt-dlp
 imageio-ffmpeg
+huggingface_hub
+pyarrow
