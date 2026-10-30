@@ -167,17 +167,44 @@ a.btn {
 
 ul#queue { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .item {
-  display: grid; grid-template-columns: 38px 1fr auto; gap: 12px; align-items: center;
-  padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2);
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2);
 }
-.item .icon {
-  width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center;
-  background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 700;
+/* Playlist position, like the numbers down the side of a YouTube playlist. */
+.item .index {
+  width: 28px; flex-shrink: 0; align-self: center; text-align: center;
+  color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums;
 }
-.item.done .icon { background: var(--ok-soft); color: var(--ok); }
-.item.error .icon { background: var(--err-soft); color: var(--err); }
-.item .meta { min-width: 0; }
-.item .title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item .index:empty { display: none; }
+.item .thumb {
+  position: relative; flex-shrink: 0; width: 160px; aspect-ratio: 16 / 9;
+  border-radius: 8px; overflow: hidden;
+  background: var(--accent-soft); display: grid; place-items: center;
+}
+.item .thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.item .thumb img:not([src]) { display: none; }
+.item .thumb .fmt {
+  position: absolute; top: 5px; left: 5px; padding: 1px 6px; border-radius: 5px;
+  background: var(--accent); color: #fff; font-size: 11px; font-weight: 700;
+}
+/* No picture (still loading, or not a video site): show the format big instead. */
+.item .thumb.no-img .fmt { position: static; background: none; color: var(--accent); font-size: 14px; }
+.item.done .thumb .fmt { background: var(--ok); }
+.item.error .thumb .fmt { background: var(--err); }
+.item.done .thumb.no-img .fmt { background: none; color: var(--ok); }
+.item.error .thumb.no-img .fmt { background: none; color: var(--err); }
+.item .thumb .duration {
+  position: absolute; right: 5px; bottom: 5px; padding: 1px 5px; border-radius: 4px;
+  background: rgba(0,0,0,.8); color: #fff; font-size: 12px; font-weight: 600;
+}
+.item .thumb .duration:empty { display: none; }
+.item .meta { flex: 1; min-width: 0; }
+.item .title {
+  font-size: 14px; font-weight: 600; line-height: 1.4; overflow: hidden; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.item .channel { font-size: 13px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item .channel:empty { display: none; }
 .item .line { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
 .item.error .line { color: var(--err); white-space: normal; }
 .bar { height: 5px; background: var(--border); border-radius: 99px; overflow: hidden; margin-top: 8px; }
@@ -189,7 +216,7 @@ ul#queue { list-style: none; margin: 0; padding: 0; display: flex; flex-directio
 .bar.indeterminate > span { width: 35%; animation: slide 1.2s ease-in-out infinite; }
 @keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
 .item.done .bar, .item.error .bar { display: none; }
-.item .right { display: flex; gap: 6px; align-items: center; }
+.item .right { display: flex; gap: 6px; align-items: center; align-self: center; }
 .icon-btn {
   padding: 6px; border-radius: 8px; border: 1px solid transparent; background: transparent; color: var(--muted);
 }
@@ -218,7 +245,8 @@ footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 2
 
 @media (max-width: 520px) {
   .wrap { padding-top: 24px; }
-  .item { grid-template-columns: 32px 1fr; }
-  .item .icon { width: 32px; height: 32px; }
-  .item .right { grid-column: 1 / -1; justify-content: flex-end; }
+  .item { flex-wrap: wrap; }
+  .item .thumb { width: 120px; }
+  .item .meta { flex-basis: 0; }
+  .item .right { width: 100%; justify-content: flex-end; }
 }

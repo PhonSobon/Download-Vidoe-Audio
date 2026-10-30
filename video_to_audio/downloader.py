@@ -114,12 +114,28 @@ def run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, d
         _run_download(job_id, url, fmt, limit_minutes, download_dir)
 
 
+def video_card(info: dict) -> dict:
+    """What the page shows next to a video: thumbnail, duration (seconds) and
+    channel. Works for full video info and for flat playlist entries."""
+    thumbnail = info.get("thumbnail")
+    if not thumbnail and info.get("thumbnails"):
+        thumbnail = info["thumbnails"][-1].get("url")
+    # Flat YouTube entries list huge or odd-sized thumbnails; this one is a
+    # small 16:9 image that always exists.
+    if info.get("id") and (info.get("ie_key") or info.get("extractor_key")) == "Youtube":
+        thumbnail = f"https://i.ytimg.com/vi/{info['id']}/mqdefault.jpg"
+    return {"thumbnail": thumbnail, "duration": info.get("duration"),
+            "channel": info.get("channel") or info.get("uploader")}
+
+
 def _make_progress_hook(job_id: str):
     def hook(d):
         job = JOBS[job_id]
         info = d.get("info_dict") or {}
         if info.get("title") and not job.get("title"):
             job["title"] = info["title"]
+        if info and not job.get("card"):
+            job["card"] = video_card(info)
         if d.get("status") == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate")
             if total:
@@ -167,6 +183,7 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
         with cookies.ydl_options() as cookie_opts, yt_dlp.YoutubeDL({**ydl_opts, **cookie_opts}) as ydl:
             info = ydl.extract_info(url, download=True)
             title = info.get("title", "download")
+        JOBS[job_id]["card"] = video_card(info)
 
         # Where the audio came from, kept so a Hugging Face push can credit
         # the original video/page (see huggingface.hf_row).
@@ -271,7 +288,8 @@ def start_cleanup(download_dir: str, max_age_seconds: float, every_seconds: floa
 
 
 def expand_playlist(url: str, limit: int | None = None, start: int = 1) -> dict:
-    """Turn a playlist link into {"title", "total", "videos": [{"url", "title"}],
+    """Turn a playlist link into {"title", "channel", "total", "videos": [{"url",
+    "title", "index", "thumbnail", "duration", "channel"}],
     "next_start", "has_more"}. start is the 1-based playlist position to begin
     at and limit, if set, keeps only N videos from there, so a long playlist can
     be fetched in batches by passing the previous "next_start". "total" is how
@@ -292,9 +310,12 @@ def expand_playlist(url: str, limit: int | None = None, start: int = 1) -> dict:
     with cookies.ydl_options() as cookie_opts, yt_dlp.YoutubeDL({**ydl_opts, **cookie_opts}) as ydl:
         info = ydl.extract_info(url, download=False)
 
+    # The YouTube channel that owns the playlist (or posted the video).
+    channel = info.get("channel") or info.get("uploader")
     entries = info.get("entries")
     if entries is None:
-        return {"title": info.get("title"), "total": 1, "videos": [{"url": url, "title": info.get("title")}],
+        return {"title": info.get("title"), "channel": channel, "total": 1,
+                "videos": [{"url": url, "title": info.get("title"), "index": 1, **video_card(info)}],
                 "next_start": 2, "has_more": False}
 
     videos = []
@@ -311,7 +332,9 @@ def expand_playlist(url: str, limit: int | None = None, start: int = 1) -> dict:
         if not video_url and entry.get("id"):
             video_url = f"https://www.youtube.com/watch?v={entry['id']}"
         if video_url:
-            videos.append({"url": video_url, "title": title})
+            # index: position in the playlist, shown next to the video like YouTube does.
+            videos.append({"url": video_url, "title": title, "index": start + seen - 1,
+                           **video_card(entry)})
 
     total = info.get("playlist_count")
     next_start = start + seen
@@ -320,5 +343,5 @@ def expand_playlist(url: str, limit: int | None = None, start: int = 1) -> dict:
     else:
         # Unknown size: a full batch means there may be more.
         has_more = bool(limit) and seen >= limit
-    return {"title": info.get("title"), "total": total, "videos": videos,
+    return {"title": info.get("title"), "channel": channel, "total": total, "videos": videos,
             "next_start": next_start, "has_more": has_more}

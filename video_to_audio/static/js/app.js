@@ -150,11 +150,17 @@ function videoId(url) {
 
 // Returns the new queue item, or null if this video is already in the queue
 // in the same format.
-// `playlist` is the title of the playlist the video came from, if any.
-function addVideo(url, fmt, limit, title, playlist) {
+// `video` is what's already known about it from its playlist:
+// { title, index, thumbnail, duration, channel }.
+// `playlist` is "Playlist - Channel" for the playlist the video came from, if any.
+function addVideo(url, fmt, limit, video = {}, playlist) {
   const id = videoId(url);
   if (items.some(i => i.videoId === id && i.fmt === fmt)) return null;
-  const item = { key: nextKey++, url, videoId: id, fmt, limit, title, playlist, status: 'starting', progress: 0 };
+  const { title, index, duration, channel } = video;
+  // YouTube thumbnails can be shown straight away, before the download starts.
+  const thumbnail = video.thumbnail || (id.startsWith('yt:') ? `https://i.ytimg.com/vi/${id.slice(3)}/mqdefault.jpg` : null);
+  const item = { key: nextKey++, url, videoId: id, fmt, limit, title, index, thumbnail, duration, channel,
+                 playlist, status: 'starting', progress: 0 };
   items.push(item);
   createRow(item);
   start(item);
@@ -162,12 +168,12 @@ function addVideo(url, fmt, limit, title, playlist) {
 }
 
 // Playlists that still have videos left to fetch, shown as a "continue" bar
-// above the queue: { url, fmt, limit, title, total, added, next, busy, el }
+// above the queue: { url, fmt, limit, title, channel, total, added, next, busy, el }
 const playlists = [];
 const moreEl = $('playlistMore');
 
 function addPlaylist(url, fmt, limit, maxVideos) {
-  const pl = { url, fmt, limit, title: null, total: null, added: 0, next: 1, busy: false };
+  const pl = { url, fmt, limit, title: null, channel: null, total: null, added: 0, next: 1, busy: false };
   loadPlaylist(pl, maxVideos);
 }
 
@@ -192,6 +198,9 @@ async function loadPlaylist(pl, count) {
     if (!items.includes(placeholder)) return; // removed while loading
     removeItem(placeholder);
     pl.title = data.title || pl.title;
+    pl.channel = data.channel || pl.channel;
+    // "Playlist - Channel", used to name the zip of its files.
+    const zipName = [pl.title, pl.channel].filter(Boolean).join(' - ');
     pl.total = data.total;
     pl.next = data.next_start;
     pl.added += data.videos.length;
@@ -199,7 +208,7 @@ async function loadPlaylist(pl, count) {
     // Prepend in reverse so the queue shows the playlist in its original order.
     let skipped = 0;
     for (const v of [...data.videos].reverse()) {
-      if (!addVideo(v.url, pl.fmt, pl.limit, v.title, pl.title)) skipped++;
+      if (!addVideo(v.url, pl.fmt, pl.limit, v, zipName)) skipped++;
     }
     noteSkipped(skipped);
     if (data.has_more && !playlists.includes(pl)) playlists.push(pl);
@@ -299,6 +308,9 @@ async function poll(item) {
     item.status = data.status;
     item.progress = data.progress || 0;
     if (data.title) item.title = data.title;
+    // Fill in whatever the playlist didn't tell us (always the case for single links).
+    const card = data.card || {};
+    for (const k of ['thumbnail', 'duration', 'channel']) if (card[k] && !item[k]) item[k] = card[k];
     if (data.status === 'error') return fail(item, data.error);
     updateRow(item);
     render();
@@ -319,18 +331,40 @@ function hostOf(url) {
   try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
 }
 
+// 56:35, 1:02:03
+function formatDuration(seconds) {
+  if (!seconds) return '';
+  seconds = Math.round(seconds);
+  const h = Math.floor(seconds / 3600), m = Math.floor(seconds / 60) % 60, s = seconds % 60;
+  const pad = n => String(n).padStart(2, '0');
+  return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
+
 function createRow(item) {
   const el = tpl.content.firstElementChild.cloneNode(true);
   item.el = el;
+  // A thumbnail that fails to load falls back to the plain format box.
+  const img = el.querySelector('.thumb img');
+  img.onerror = () => { img.removeAttribute('src'); el.querySelector('.thumb').classList.add('no-img'); };
   queueEl.prepend(el);
 }
 
 function updateRow(item) {
   const el = item.el;
   el.className = 'item ' + item.status;
-  el.querySelector('.icon').textContent = item.status === 'expanding' ? 'LIST' : item.fmt.toUpperCase();
+  el.querySelector('.index').textContent = item.index || '';
+  const thumb = el.querySelector('.thumb'), img = thumb.querySelector('img');
+  if (item.thumbnail && img.dataset.src !== item.thumbnail) {
+    img.dataset.src = item.thumbnail;
+    img.src = item.thumbnail;
+    thumb.classList.remove('no-img');
+  }
+  if (!img.hasAttribute('src')) thumb.classList.add('no-img');
+  thumb.querySelector('.fmt').textContent = item.status === 'expanding' ? 'LIST' : item.fmt.toUpperCase();
+  thumb.querySelector('.duration').textContent = formatDuration(item.duration);
   el.querySelector('.title').textContent = item.title || item.url;
-  el.querySelector('.title').title = item.url;
+  el.querySelector('.title').title = item.title || item.url;
+  el.querySelector('.channel').textContent = item.channel || '';
 
   const line = el.querySelector('.line');
   const bar = el.querySelector('.bar');
@@ -426,7 +460,8 @@ function render() {
     zipAllEl.style.display = '';
     zipAllEl.textContent = `Download all ${done.length} (.zip)`;
     zipAllEl.href = '/download_zip?ids=' + done.map(i => i.jobId).join(',');
-    // Name the zip after the playlist when every file came from the same one.
+    // Name the zip after the playlist and its channel when every file came
+    // from the same playlist.
     const lists = new Set(done.map(i => i.playlist || ''));
     const [playlist] = lists;
     if (lists.size === 1 && playlist) zipAllEl.href += '&name=' + encodeURIComponent(playlist);

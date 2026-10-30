@@ -68,7 +68,7 @@ def test_zip_is_named_after_the_playlist(client, make_job):
     from urllib.parse import quote
     make_job("p1", title="A")
     make_job("p2", title="B")
-    playlist = "សមិទ្ធផលរបស់គណៈកម្មការជំនាញរបស់ព្រឹទ្ធសភា"
+    playlist = "សមិទ្ធផលរបស់គណៈកម្មការជំនាញរបស់ព្រឹទ្ធសភា - ព្រឹទ្ធសភា"
     res = client.get(f"/download_zip?ids=p1,p2&name={quote(playlist)}")
     assert res.status_code == 200
     assert quote(f"{playlist}.zip") in res.headers["Content-Disposition"]
@@ -108,16 +108,22 @@ def test_expand_playlist_batches(monkeypatch):
         def extract_info(self, url, download=False):
             o = seen_opts[-1]
             first, last = o.get("playliststart", 1), min(o.get("playlistend", 25), 25)
-            return {"title": "P", "playlist_count": 25,
-                    "entries": [{"id": f"v{i}", "title": f"T{i}"} for i in range(first, last + 1)]}
+            return {"title": "P", "channel": "Senate TV", "playlist_count": 25,
+                    "entries": [{"id": f"v{i}", "title": f"T{i}", "ie_key": "Youtube", "duration": 227,
+                                 "channel": "Senate TV"} for i in range(first, last + 1)]}
 
     monkeypatch.setattr(downloader.yt_dlp, "YoutubeDL", FakeYDL)
     url = "https://www.youtube.com/playlist?list=PLx"
     first = downloader.expand_playlist(url, 10)
     assert [v["title"] for v in first["videos"]][0] == "T1" and len(first["videos"]) == 10
     assert first["next_start"] == 11 and first["has_more"]
+    assert first["channel"] == "Senate TV"
     second = downloader.expand_playlist(url, 10, first["next_start"])
     assert second["videos"][0]["title"] == "T11" and seen_opts[-1]["playlistend"] == 20
+    # Each video carries what the queue shows next to it, like a YouTube playlist.
+    v = second["videos"][0]
+    assert v["index"] == 11 and v["duration"] == 227 and v["channel"] == "Senate TV"
+    assert v["thumbnail"] == "https://i.ytimg.com/vi/v11/mqdefault.jpg"
     rest = downloader.expand_playlist(url, None, second["next_start"])
     assert len(rest["videos"]) == 5 and not rest["has_more"]
 
