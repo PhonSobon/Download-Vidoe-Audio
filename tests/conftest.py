@@ -3,7 +3,17 @@ import os
 import pytest
 
 from video_to_audio import create_app
-from video_to_audio.downloader import JOBS
+from video_to_audio.config import Config
+from video_to_audio.downloader import JOBS, rename_to_title
+
+
+@pytest.fixture(autouse=True)
+def cookies_file(tmp_path, monkeypatch):
+    """Keep tests away from the real cookies.txt in the project folder."""
+    path = str(tmp_path / "cookies.txt")
+    monkeypatch.setattr(Config, "COOKIES_FILE", path)
+    monkeypatch.setattr(Config, "COOKIES_FROM_BROWSER", "")
+    return path
 
 
 @pytest.fixture
@@ -27,6 +37,7 @@ def make_job(download_dir):
         filename = f"{job_id}.{fmt}"
         with open(os.path.join(download_dir, filename), "wb") as f:
             f.write(b"ID3fake-" + job_id.encode())
+        filename = rename_to_title(download_dir, filename, title)
         JOBS[job_id] = {
             "status": "done", "format": fmt, "filename": filename, "title": title, "url": url,
             "finished_at": "2026-10-25T00:00:00+00:00",

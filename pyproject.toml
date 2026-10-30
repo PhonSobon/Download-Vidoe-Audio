@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "flask",
-    "yt-dlp",
+    "yt-dlp[default]>=2026.10.26",
     "imageio-ffmpeg",
     "huggingface_hub",
     "pyarrow",

@@ -3,11 +3,13 @@ its progress into the in-memory JOBS dict, which the page polls."""
 import os
 import re
 import threading
+import time
 from datetime import datetime, timezone
 
 import yt_dlp
 from yt_dlp.utils import download_range_func
 
+from . import cookies
 from .config import Config
 
 # imageio-ffmpeg bundles its own portable ffmpeg binary and downloads it on
@@ -37,28 +39,63 @@ def is_valid_url(url: str) -> bool:
     return bool(url) and bool(GENERIC_URL_RE.match(url.strip()))
 
 
-# Base options applied to every download. The extractor_args/player_client
-# and user-agent below are a known workaround for the "HTTP Error 403:
-# Forbidden" that YouTube periodically throws -- it happens when YouTube's
-# web player signature check rejects the default client yt-dlp presents.
-# Falling back to the android/ios client skips that check.
-# NOTE: this only helps if yt-dlp itself is up to date. If you still get
-# 403 errors after this, run:  pip install -U yt-dlp
+# Characters Windows doesn't allow in file names, plus control characters.
+# Everything else is kept, so Khmer, Thai, Chinese, etc. titles stay readable
+# (werkzeug's secure_filename would strip them down to nothing).
+BAD_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
+                    *(f"LPT{i}" for i in range(1, 10))}
+# Keeps the full path short enough for Windows even in a deep folder.
+MAX_TITLE_LENGTH = 120
+
+
+def title_to_filename(title: str | None) -> str:
+    """A file name (without extension) made from a video title."""
+    name = BAD_FILENAME_CHARS.sub(" ", title or "")
+    name = re.sub(r"\s+", " ", name).strip()[:MAX_TITLE_LENGTH]
+    # Windows drops trailing dots/spaces, which would change the name.
+    name = name.rstrip(". ")
+    if not name or name.upper() in WINDOWS_RESERVED:
+        name = "audio"
+    return name
+
+
+# Two downloads of videos with the same title can finish at the same time.
+RENAME_LOCK = threading.Lock()
+
+
+def rename_to_title(download_dir: str, filename: str, title: str | None) -> str:
+    """Rename a finished download to "<title>.<ext>" ("<title> (2).<ext>" if
+    that's taken) and return the new file name."""
+    ext = os.path.splitext(filename)[1]
+    base = title_to_filename(title)
+    with RENAME_LOCK:
+        name, n = f"{base}{ext}", 2
+        while os.path.exists(os.path.join(download_dir, name)):
+            name, n = f"{base} ({n}){ext}", n + 1
+        os.replace(os.path.join(download_dir, filename), os.path.join(download_dir, name))
+    return name
+
+
+# Base options applied to every download. YouTube clients and headers are
+# left to yt-dlp's own defaults, which track YouTube's changes; forcing a
+# client or user-agent here goes stale and causes 403s / bot checks.
+# YouTube also needs a JavaScript runtime to solve its player challenges
+# (scripts come from the yt-dlp-ejs package in yt-dlp[default]). yt-dlp only
+# looks for Deno by default, so also allow Node and Bun if installed.
+# If YouTube errors appear, first run:  pip install -U "yt-dlp[default]"
 COMMON_OPTS = {
     "quiet": True,
     "noplaylist": True,
-    "extractor_args": {
-        "youtube": {
-            "player_client": ["android", "web"],
-        }
-    },
-    "http_headers": {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    },
+    # Keep the real file times (not the video's upload date) so
+    # delete_old_files can tell how long a file has been sitting there.
+    "updatetime": False,
+    "js_runtimes": {"deno": {}, "node": {}, "bun": {}},
 }
 if FFMPEG_PATH:
     COMMON_OPTS["ffmpeg_location"] = FFMPEG_PATH
+# Cookies aren't in COMMON_OPTS: they're looked up on every download (see
+# cookies.ydl_options) so a cookies.txt uploaded on the page works right away.
 
 
 def start_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, download_dir: str):
@@ -127,7 +164,7 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
             ydl_opts["download_ranges"] = download_range_func(None, [(0, end_seconds)])
             ydl_opts["force_keyframes_at_cuts"] = True
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with cookies.ydl_options() as cookie_opts, yt_dlp.YoutubeDL({**ydl_opts, **cookie_opts}) as ydl:
             info = ydl.extract_info(url, download=True)
             title = info.get("title", "download")
 
@@ -157,16 +194,24 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
             else:
                 raise FileNotFoundError("Converted file was not found after download.")
 
+        # yt-dlp saved it under the job id (unique while downloading); name
+        # it after the video now that it's done.
+        produced_file = rename_to_title(download_dir, produced_file, title)
+
         JOBS[job_id]["status"] = "done"
         JOBS[job_id]["filename"] = produced_file
         JOBS[job_id]["title"] = title
         JOBS[job_id]["format"] = expected_ext
         JOBS[job_id]["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        JOBS[job_id]["done_at"] = time.time()
 
     except Exception as e:
         msg = str(e)
         low = msg.lower()
-        if "login" in low or "private" in low or "rate-limit" in low:
+        cookie_hint = cookies.explain_error(msg)
+        if cookie_hint:
+            msg += f" ({cookie_hint})"
+        elif "login" in low or "private" in low or "rate-limit" in low:
             msg += " (This link may be private, age-restricted, or require login -- those can't be downloaded.)"
         elif "403" in msg or "forbidden" in low:
             msg += " (Try running 'pip install -U yt-dlp' to update to the latest version, then retry.)"
@@ -176,9 +221,62 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
         JOBS[job_id]["error"] = msg
 
 
-def expand_playlist(url: str) -> dict:
-    """Turn a playlist link into {"title", "videos": [{"url", "title"}]}.
-    A plain video link comes back as a one-item list. Raises on failure."""
+def delete_old_files(download_dir: str, max_age_seconds: float):
+    """Files are only kept until the user saves them from the page. Delete
+    finished files older than max_age_seconds (their jobs become "expired"),
+    and any other file in the folder that old which no running job is using:
+    zips, and leftovers from earlier runs (JOBS is in memory, so those can
+    never be downloaded again). max_age_seconds=0 clears all of those."""
+    now = time.time()
+    keep = set()
+    for job_id, job in list(JOBS.items()):
+        if job["status"] == "done":
+            if now - job.get("done_at", now) >= max_age_seconds:
+                try:
+                    os.remove(os.path.join(download_dir, job["filename"]))
+                except OSError:
+                    pass
+                job["status"] = "expired"
+                job["error"] = "This file was deleted from the server. Download it again."
+            else:
+                keep.add(job["filename"])
+        elif job["status"] in ("queued", "downloading", "processing"):
+            keep.add(job_id)  # its files start with the job id while in progress
+
+    try:
+        names = os.listdir(download_dir)
+    except OSError:
+        return
+    for name in names:
+        if name in keep or name.split(".")[0] in keep:
+            continue
+        path = os.path.join(download_dir, name)
+        try:
+            if os.path.isfile(path) and now - os.path.getmtime(path) >= max_age_seconds:
+                os.remove(path)
+        except OSError:
+            pass  # e.g. a zip still being sent (Windows locks it); next time
+
+
+def start_cleanup(download_dir: str, max_age_seconds: float, every_seconds: float = 60):
+    """Empty the folder of leftovers now, then delete old files every minute."""
+    delete_old_files(download_dir, 0)
+
+    def loop():
+        while True:
+            time.sleep(every_seconds)
+            delete_old_files(download_dir, max_age_seconds)
+
+    threading.Thread(target=loop, daemon=True).start()
+
+
+def expand_playlist(url: str, limit: int | None = None, start: int = 1) -> dict:
+    """Turn a playlist link into {"title", "total", "videos": [{"url", "title"}],
+    "next_start", "has_more"}. start is the 1-based playlist position to begin
+    at and limit, if set, keeps only N videos from there, so a long playlist can
+    be fetched in batches by passing the previous "next_start". "total" is how
+    many the whole playlist has (None if unknown). A plain video link comes back
+    as a one-item list. Raises on failure."""
     ydl_opts = dict(COMMON_OPTS)
     ydl_opts.update({
         "noplaylist": False,
@@ -186,15 +284,23 @@ def expand_playlist(url: str) -> dict:
         "extract_flat": "in_playlist",
         "skip_download": True,
     })
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    if start > 1:
+        ydl_opts["playliststart"] = start
+    if limit:
+        # playlistend is a position in the playlist, not a count.
+        ydl_opts["playlistend"] = start + limit - 1
+    with cookies.ydl_options() as cookie_opts, yt_dlp.YoutubeDL({**ydl_opts, **cookie_opts}) as ydl:
         info = ydl.extract_info(url, download=False)
 
     entries = info.get("entries")
     if entries is None:
-        return {"title": info.get("title"), "videos": [{"url": url, "title": info.get("title")}]}
+        return {"title": info.get("title"), "total": 1, "videos": [{"url": url, "title": info.get("title")}],
+                "next_start": 2, "has_more": False}
 
     videos = []
+    seen = 0  # playlist positions read, including skipped ones
     for entry in entries:
+        seen += 1
         if not entry:
             continue
         title = entry.get("title")
@@ -207,4 +313,12 @@ def expand_playlist(url: str) -> dict:
         if video_url:
             videos.append({"url": video_url, "title": title})
 
-    return {"title": info.get("title"), "videos": videos}
+    total = info.get("playlist_count")
+    next_start = start + seen
+    if total:
+        has_more = next_start <= total
+    else:
+        # Unknown size: a full batch means there may be more.
+        has_more = bool(limit) and seen >= limit
+    return {"title": info.get("title"), "total": total, "videos": videos,
+            "next_start": next_start, "has_more": has_more}

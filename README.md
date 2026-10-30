@@ -66,6 +66,10 @@ it is added to the queue. Deleted/private videos are skipped. YouTube "Mix"
 links (`list=RD...`) are endless auto-playlists, so only that one video is
 downloaded.
 
+**Long playlists:** "From each playlist" sets how many videos to take
+from each playlist link: the first 5, 10, 20 (default), 50, 100, or all.
+The page tells you when a playlist had more videos than it added.
+
 Up to 3 links download at once; the rest wait their turn.
 
 ### Settings
@@ -77,11 +81,36 @@ app:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `MAX_PARALLEL_DOWNLOADS` | `3` | Links that download at the same time |
-| `DOWNLOAD_DIR` | `downloads/` in this folder | Where finished files are kept |
+| `DOWNLOAD_DIR` | `video_to_audio` in the system temp folder | Working folder for files waiting to be saved; its contents are deleted automatically |
+| `FILE_LIFETIME_MINUTES` | `60` | How long a finished file stays available on the page before it's deleted |
 | `HOST` / `PORT` | `127.0.0.1` / `5000` | Address the server listens on |
 | `HF_TOKEN` | not set | Hugging Face token used when the HF_TOKEN box is left blank |
+| `COOKIES_FILE` | `cookies.txt` in this folder | Where the YouTube cookies uploaded on the page are kept |
+| `COOKIES_FROM_BROWSER` | not set | Browser to read YouTube cookies from while there's no `cookies.txt` (Firefox only on Windows), e.g. `firefox` |
 
 For example, on Windows PowerShell: `$env:PORT = "8080"; python run.py`
+
+**"Sign in to confirm you're not a bot":** YouTube sometimes blocks
+downloads until it sees a logged-in session. Fix it in the **YouTube
+sign-in** panel on the page, no restart needed:
+
+1. Install the **Get cookies.txt LOCALLY** extension in Chrome or Edge.
+2. Open a **private/Incognito** window (allow the extension there) and log in
+   at youtube.com.
+3. Click the extension, then **Export**, and close that window right away.
+   If you keep browsing in it, YouTube swaps the cookies and the exported
+   ones stop working.
+4. Click **Upload cookies.txt** on the page, then **Retry failed**.
+
+The panel tells you if the file isn't logged in or has expired. When
+downloads start failing again later, export and upload a fresh file. The
+file stays on your computer (`cookies.txt` here, ignored by git). Downloading a
+lot with your account can get it rate-limited, so consider a spare account.
+
+Chrome and Edge can't be read directly on Windows: they lock and encrypt
+their cookies ("Could not copy Chrome cookie database" / "Failed to decrypt
+with DPAPI"). That's why the page uses an uploaded file. Firefox users can
+use `$env:COOKIES_FROM_BROWSER = "firefox"; python run.py` instead.
 
 ## 4. Push audio to Hugging Face (optional)
 
@@ -181,8 +210,7 @@ Convert-video-to-audio/
 │   └── static/
 │       ├── css/style.css
 │       └── js/app.js
-├── tests/                    # pytest tests (no network needed)
-└── downloads/                # finished files (created on first run, not in git)
+└── tests/                    # pytest tests (no network needed)
 ```
 
 ## Development
@@ -196,8 +224,11 @@ The tests use a fake Hugging Face repo, so they never upload anything.
 
 ## Notes
 
-- Downloaded files are temporarily stored in the `downloads/` folder inside
-  this project. You can delete them any time.
+- Files are not kept in this project. While they wait for you to press
+  **Save**, they sit in a temporary folder (see `DOWNLOAD_DIR`) and are
+  deleted 60 minutes after they're ready (`FILE_LIFETIME_MINUTES`), and
+  whenever the app restarts. Save what you need before then; if a file is
+  gone, press **Retry** on its row to download it again.
 - Long videos take longer to convert — the page will show "Converting..."
   until it's ready.
 - **"Only download first N minutes"** field: leave it blank to get the full

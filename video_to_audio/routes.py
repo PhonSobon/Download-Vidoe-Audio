@@ -1,14 +1,12 @@
 """HTTP endpoints used by the page in templates/index.html."""
 import os
-import time
 import uuid
 import zipfile
 
 from flask import Blueprint, current_app, jsonify, render_template, request, send_file, send_from_directory
-from werkzeug.utils import secure_filename
 
-from . import huggingface
-from .downloader import JOBS, expand_playlist, is_valid_url, start_download
+from . import cookies, huggingface
+from .downloader import JOBS, expand_playlist, is_valid_url, start_download, title_to_filename
 
 bp = Blueprint("main", __name__)
 
@@ -65,15 +63,54 @@ def generate():
 @bp.route("/expand", methods=["POST"])
 def expand():
     """Turn a playlist link into the list of video links inside it, so the
-    page can queue each one as its own download."""
+    page can queue each one as its own download. Optional "limit" keeps
+    only N videos, starting at playlist position "start" (default 1), so the
+    page can fetch a long playlist batch by batch."""
     data = request.get_json(silent=True) or {}
     url = (data.get("url") or "").strip()
     if not is_valid_url(url):
         return jsonify({"error": "Please paste a valid link."}), 400
+    limit = data.get("limit")
+    if limit not in (None, ""):
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Playlist limit must be a whole number."}), 400
+    limit = limit if limit and limit > 0 else None
     try:
-        return jsonify(expand_playlist(url))
+        start = int(data.get("start") or 1)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Playlist start must be a whole number."}), 400
+    start = max(start, 1)
+    try:
+        return jsonify(expand_playlist(url, limit, start))
     except Exception as e:
-        return jsonify({"error": f"Couldn't read this playlist: {e}"}), 400
+        msg = f"Couldn't read this playlist: {e}"
+        hint = cookies.explain_error(msg)
+        return jsonify({"error": f"{msg} ({hint})" if hint else msg}), 400
+
+
+@bp.route("/cookies", methods=["GET"])
+def cookies_status():
+    return jsonify(cookies.status())
+
+
+@bp.route("/cookies", methods=["POST"])
+def cookies_upload():
+    """Save an uploaded cookies.txt (form field "file") for YouTube downloads."""
+    upload = request.files.get("file")
+    if not upload:
+        return jsonify({"error": "Choose a cookies.txt file first."}), 400
+    try:
+        return jsonify(cookies.save(upload.read(cookies.MAX_SIZE + 1)))
+    except cookies.CookieError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@bp.route("/cookies", methods=["DELETE"])
+def cookies_delete():
+    cookies.delete()
+    return jsonify(cookies.status())
 
 
 @bp.route("/status/<job_id>")
@@ -87,16 +124,17 @@ def status(job_id):
 @bp.route("/download/<job_id>")
 def download(job_id):
     job = JOBS.get(job_id)
+    if job and job.get("status") == "expired":
+        return jsonify({"error": job["error"]}), 410
     if not job or job.get("status") != "done":
         return jsonify({"error": "File not ready"}), 400
-    # Deliver a readable filename rather than the internal job id.
-    title = secure_filename(job.get("title") or "video") or "video"
-    extension = os.path.splitext(job["filename"])[1] or ".mp4"
+    # The file is already named after the video title (see
+    # downloader.rename_to_title), so the browser saves it under that name.
     return send_from_directory(
         current_app.config["DOWNLOAD_DIR"],
         job["filename"],
         as_attachment=True,
-        download_name=f"{title}{extension}",
+        download_name=job["filename"],
     )
 
 
@@ -139,27 +177,18 @@ def download_zip():
         return jsonify({"error": "None of those files are ready"}), 400
 
     # Zips are temporary bundles of files already on disk. A zip can't be
-    # deleted while it's still streaming (Windows locks it), so instead sweep
-    # away ones from earlier requests that are old enough to be finished.
-    for f in os.listdir(download_dir):
-        path = os.path.join(download_dir, f)
-        if f.startswith("batch-") and f.endswith(".zip") and time.time() - os.path.getmtime(path) > 3600:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-
+    # deleted while it's still streaming (Windows locks it), so it's left for
+    # downloader.delete_old_files to remove once it's old enough.
     zip_path = os.path.join(download_dir, f"batch-{uuid.uuid4().hex[:12]}.zip")
-    used_names = set()
     # ZIP_STORED: mp3/mp4 are already compressed, so deflating just burns CPU.
+    # Files are named after their titles and unique within the folder, so
+    # they go in the zip under the same names.
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as zf:
         for job in jobs:
-            title = secure_filename(job.get("title") or "video") or "video"
-            extension = os.path.splitext(job["filename"])[1]
-            name, n = f"{title}{extension}", 2
-            while name in used_names:
-                name, n = f"{title} ({n}){extension}", n + 1
-            used_names.add(name)
-            zf.write(os.path.join(download_dir, job["filename"]), arcname=name)
+            zf.write(os.path.join(download_dir, job["filename"]), arcname=job["filename"])
 
-    return send_file(zip_path, as_attachment=True, download_name="downloads.zip")
+    # The page passes the playlist title as "name" when all the files came
+    # from one playlist, so the zip is saved as e.g. "<playlist>.zip".
+    name = (request.args.get("name") or "").strip()
+    zip_name = title_to_filename(name) if name else "downloads"
+    return send_file(zip_path, as_attachment=True, download_name=f"{zip_name}.zip")

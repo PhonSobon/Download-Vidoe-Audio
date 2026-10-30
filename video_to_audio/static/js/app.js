@@ -97,8 +97,19 @@ function isPlaylist(url) {
   } catch { return false; }
 }
 
+// How many videos to take from each playlist ('' = all), remembered between visits.
+const playlistLimit = $('playlistLimit'), formNote = $('formNote');
+try {
+  const saved = localStorage.getItem('playlistLimit');
+  if (saved !== null && [...playlistLimit.options].some(o => o.value === saved)) playlistLimit.value = saved;
+} catch {}
+playlistLimit.addEventListener('change', () => {
+  try { localStorage.setItem('playlistLimit', playlistLimit.value); } catch {}
+});
+
 goBtn.addEventListener('click', () => {
   formError.textContent = '';
+  formNote.textContent = '';
   // A link still sitting in the box (Enter not pressed yet) counts too.
   if (urlInput.value.trim()) addFromInput();
   if (!pending.length) {
@@ -107,50 +118,154 @@ goBtn.addEventListener('click', () => {
   }
   const fmt = selectedFormat();
   const limit = limitInput.value.trim() || null;
+  const maxVideos = playlistLimit.value || null;
+  let skipped = 0;
   for (const url of pending) {
-    if (isPlaylist(url)) addPlaylist(url, fmt, limit);
-    else addVideo(url, fmt, limit);
+    if (isPlaylist(url)) addPlaylist(url, fmt, limit, maxVideos);
+    else if (!addVideo(url, fmt, limit)) skipped++;
   }
+  noteSkipped(skipped);
   pending.length = 0;
   renderPending();
   render();
 });
 renderPending();
 
-function addVideo(url, fmt, limit, title) {
-  const item = { key: nextKey++, url, fmt, limit, title, status: 'starting', progress: 0 };
+// Same video whatever form its link takes: watch?v=ID, youtu.be/ID, shorts/ID,
+// with or without &t=, &list= etc. Other sites fall back to the link itself.
+function videoId(url) {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^(www|m|music)\./, '');
+    if (host === 'youtu.be') return 'yt:' + u.pathname.slice(1).split('/')[0];
+    if (host === 'youtube.com') {
+      if (u.searchParams.get('v')) return 'yt:' + u.searchParams.get('v');
+      const m = u.pathname.match(/^\/(shorts|live|embed)\/([^/]+)/);
+      if (m) return 'yt:' + m[2];
+    }
+    u.hash = '';
+    return u.href;
+  } catch { return url; }
+}
+
+// Returns the new queue item, or null if this video is already in the queue
+// in the same format.
+// `playlist` is the title of the playlist the video came from, if any.
+function addVideo(url, fmt, limit, title, playlist) {
+  const id = videoId(url);
+  if (items.some(i => i.videoId === id && i.fmt === fmt)) return null;
+  const item = { key: nextKey++, url, videoId: id, fmt, limit, title, playlist, status: 'starting', progress: 0 };
   items.push(item);
   createRow(item);
   start(item);
   return item;
 }
 
-async function addPlaylist(url, fmt, limit) {
+// Playlists that still have videos left to fetch, shown as a "continue" bar
+// above the queue: { url, fmt, limit, title, total, added, next, busy, el }
+const playlists = [];
+const moreEl = $('playlistMore');
+
+function addPlaylist(url, fmt, limit, maxVideos) {
+  const pl = { url, fmt, limit, title: null, total: null, added: 0, next: 1, busy: false };
+  loadPlaylist(pl, maxVideos);
+}
+
+// Fetch the next `count` videos of a playlist (null = all that are left) and queue them.
+async function loadPlaylist(pl, count) {
   // Placeholder row while the playlist is being read; replaced by its videos.
-  const placeholder = { key: nextKey++, url, fmt, limit, status: 'expanding', progress: 0 };
+  const placeholder = { key: nextKey++, url: pl.url, fmt: pl.fmt, limit: pl.limit, title: pl.title, status: 'expanding', progress: 0 };
   items.push(placeholder);
   createRow(placeholder);
   updateRow(placeholder);
+  pl.busy = true;
+  renderMore();
   render();
   try {
     const res = await fetch('/expand', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url })
+      body: JSON.stringify({ url: pl.url, limit: count, start: pl.next })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Could not read this playlist.');
-    if (!data.videos.length) throw new Error('This playlist has no downloadable videos.');
     if (!items.includes(placeholder)) return; // removed while loading
     removeItem(placeholder);
+    pl.title = data.title || pl.title;
+    pl.total = data.total;
+    pl.next = data.next_start;
+    pl.added += data.videos.length;
+    if (!pl.added && !data.has_more) throw new Error('This playlist has no downloadable videos.');
     // Prepend in reverse so the queue shows the playlist in its original order.
-    for (const v of [...data.videos].reverse()) addVideo(v.url, fmt, limit, v.title);
+    let skipped = 0;
+    for (const v of [...data.videos].reverse()) {
+      if (!addVideo(v.url, pl.fmt, pl.limit, v.title, pl.title)) skipped++;
+    }
+    noteSkipped(skipped);
+    if (data.has_more && !playlists.includes(pl)) playlists.push(pl);
+    if (!data.has_more) dropPlaylist(pl);
     render();
   } catch (err) {
     // Retry on this row should re-read the playlist, not download one video.
-    placeholder.retry = () => { removeItem(placeholder); addPlaylist(url, fmt, limit); };
+    placeholder.retry = () => { removeItem(placeholder); loadPlaylist(pl, count); };
     fail(placeholder, err.message);
+  } finally {
+    pl.busy = false;
+    renderMore();
   }
+}
+
+function noteSkipped(n) {
+  if (n) formNote.textContent = `Skipped ${n} video${n > 1 ? 's' : ''} already in the queue.`;
+}
+
+function dropPlaylist(pl) {
+  const i = playlists.indexOf(pl);
+  if (i >= 0) playlists.splice(i, 1);
+}
+
+function renderMore() {
+  moreEl.replaceChildren();
+  for (const pl of playlists) {
+    const row = document.createElement('div');
+    row.className = 'more-row';
+    const text = document.createElement('div');
+    text.className = 'more-text';
+    const name = document.createElement('b');
+    name.textContent = pl.title || pl.url;
+    name.title = pl.url;
+    const left = pl.total ? pl.total - pl.next + 1 : null;
+    const info = document.createElement('span');
+    info.textContent = pl.total
+      ? `Added ${pl.next - 1} of ${pl.total} videos · ${left} left`
+      : `Added ${pl.next - 1} videos · more available`;
+    text.append(name, info);
+
+    const btns = document.createElement('div');
+    btns.className = 'more-btns';
+    const sizes = [10, 20, 50].filter(n => left === null || n < left);
+    for (const n of sizes) btns.append(moreButton(pl, `+${n} more`, n));
+    btns.append(moreButton(pl, left ? `All ${left} left` : 'All the rest', null));
+    const close = document.createElement('button');
+    close.className = 'icon-btn';
+    close.title = 'Stop offering more from this playlist';
+    close.setAttribute('aria-label', close.title);
+    close.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+    close.onclick = () => { dropPlaylist(pl); renderMore(); };
+    btns.append(close);
+
+    row.append(text, btns);
+    moreEl.append(row);
+  }
+}
+
+function moreButton(pl, label, count) {
+  const b = document.createElement('button');
+  b.className = 'small';
+  b.textContent = pl.busy ? 'Loading…' : label;
+  b.disabled = pl.busy;
+  b.onclick = () => loadPlaylist(pl, count);
+  return b;
 }
 
 async function start(item) {
@@ -247,6 +362,16 @@ function updateRow(item) {
     a.className = 'btn';
     a.href = `/download/${item.jobId}`;
     a.textContent = 'Save';
+    // The server deletes files a while after they're ready; if this one is
+    // gone, show that (Retry downloads it again) instead of a JSON error page.
+    a.onclick = async e => {
+      e.preventDefault();
+      try {
+        const data = await (await fetch(`/status/${item.jobId}`)).json();
+        if (data.status === 'expired') return fail(item, data.error);
+      } catch {}
+      location.href = a.href;
+    };
     right.append(a);
   }
   if (item.status === 'error') {
@@ -301,11 +426,75 @@ function render() {
     zipAllEl.style.display = '';
     zipAllEl.textContent = `Download all ${done.length} (.zip)`;
     zipAllEl.href = '/download_zip?ids=' + done.map(i => i.jobId).join(',');
+    // Name the zip after the playlist when every file came from the same one.
+    const lists = new Set(done.map(i => i.playlist || ''));
+    const [playlist] = lists;
+    if (lists.size === 1 && playlist) zipAllEl.href += '&name=' + encodeURIComponent(playlist);
   } else {
     zipAllEl.style.display = 'none';
   }
   renderHf();
 }
+
+// --- YouTube sign-in (cookies) ---
+const cookieStatus = $('cookieStatus'), cookieFile = $('cookieFile');
+const cookieUploadBtn = $('cookieUpload'), cookieRemoveBtn = $('cookieRemove'), cookieResult = $('cookieResult');
+
+function renderCookies(s) {
+  cookieStatus.className = 'cookie-status';
+  cookieRemoveBtn.style.display = s.source === 'file' ? '' : 'none';
+  cookieUploadBtn.textContent = s.source === 'file' ? 'Replace cookies.txt' : 'Upload cookies.txt';
+  if (s.source === 'file') {
+    if (s.error) {
+      cookieStatus.classList.add('warn');
+      cookieStatus.textContent = `The saved cookies.txt can't be used: ${s.error}`;
+    } else if (s.logged_in) {
+      cookieStatus.classList.add('ok');
+      cookieStatus.textContent = `✓ Signed-in YouTube cookies in use (uploaded ${s.updated}).`;
+    } else {
+      cookieStatus.classList.add('warn');
+      cookieStatus.textContent = s.expired
+        ? 'The saved cookies.txt has expired. Export a fresh one and upload it.'
+        : 'The saved cookies.txt isn\'t logged in to YouTube, so it won\'t get past the bot check. Log in first, then export again.';
+    }
+  } else if (s.source === 'browser') {
+    cookieStatus.textContent = `Reading cookies from ${s.browser} (COOKIES_FROM_BROWSER). An uploaded cookies.txt takes priority.`;
+  } else {
+    cookieStatus.textContent = 'No cookies yet. Downloads work without them until YouTube asks you to sign in.';
+  }
+}
+
+async function cookieRequest(method, body) {
+  cookieResult.textContent = '';
+  try {
+    const res = await fetch('/cookies', { method, body });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Something went wrong.');
+    renderCookies(data);
+    return true;
+  } catch (err) {
+    cookieResult.textContent = err.message === 'Failed to fetch' ? 'Lost connection to the server.' : err.message;
+    return false;
+  }
+}
+
+cookieUploadBtn.addEventListener('click', () => cookieFile.click());
+cookieFile.addEventListener('change', async () => {
+  const file = cookieFile.files[0];
+  if (!file) return;
+  const form = new FormData();
+  form.append('file', file);
+  cookieUploadBtn.disabled = true;
+  const ok = await cookieRequest('POST', form);
+  cookieUploadBtn.disabled = false;
+  cookieFile.value = '';
+  // Downloads that failed on the bot check can go again now.
+  if (ok && items.some(i => i.status === 'error')) {
+    cookieStatus.textContent += ' Press "Retry failed" in the queue to try again.';
+  }
+});
+cookieRemoveBtn.addEventListener('click', () => cookieRequest('DELETE'));
+cookieRequest('GET');
 
 // --- Push to Hugging Face ---
 const hfRepo = $('hfRepo'), hfToken = $('hfToken'), hfPrivate = $('hfPrivate');
