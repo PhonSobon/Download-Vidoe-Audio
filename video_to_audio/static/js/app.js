@@ -7,6 +7,8 @@ const tpl = $('itemTpl');
 // Every link added in this session: { key, url, fmt, limit, jobId, status, progress, title, error, el }
 const items = [];
 let nextKey = 1;
+const downloadStarts = [];
+let startsInFlight = 0, downloadPollTimer = null, downloadPollInFlight = false;
 
 function parseLinks(text) {
   const found = text.match(/https?:\/\/[^\s,]+/g) || [];
@@ -72,12 +74,25 @@ function addFromInput() {
     urlInput.focus();
     return;
   }
-  const fresh = links.filter(l => !pending.includes(l));
-  if (!fresh.length) formError.textContent = 'That link is already in your list.';
-  pending.push(...fresh);
+  const added = addPendingLinks(links);
+  if (!added) formError.textContent = 'That link is already in your list.';
   urlInput.value = '';
   urlInput.focus();
   renderPending();
+}
+
+function addPendingLinks(links) {
+  const seen = new Set(pending.map(videoId));
+  let added = 0;
+  for (const link of links) {
+    const id = videoId(link);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    pending.push(link);
+    added++;
+  }
+  renderPending();
+  return added;
 }
 
 urlInput.addEventListener('keydown', e => {
@@ -142,6 +157,10 @@ function videoId(url) {
       if (u.searchParams.get('v')) return 'yt:' + u.searchParams.get('v');
       const m = u.pathname.match(/^\/(shorts|live|embed)\/([^/]+)/);
       if (m) return 'yt:' + m[2];
+    }
+    if (host === 'tiktok.com') {
+      const m = u.pathname.match(/^\/@[^/]+\/(video|photo)\/(\d+)\/?$/);
+      if (m) return 'tiktok:' + m[2];
     }
     u.hash = '';
     return u.href;
@@ -277,11 +296,27 @@ function moreButton(pl, label, count) {
   return b;
 }
 
-async function start(item) {
+function start(item) {
   item.status = 'starting';
+  item.jobId = null;
   item.error = null;
   item.progress = 0;
+  item.lastSnapshot = null;
   updateRow(item);
+  downloadStarts.push(item);
+  submitDownloads();
+}
+
+function submitDownloads() {
+  while (startsInFlight < 3 && downloadStarts.length) {
+    const item = downloadStarts.shift();
+    if (!items.includes(item)) continue;
+    startsInFlight++;
+    submitDownload(item).finally(() => { startsInFlight--; submitDownloads(); });
+  }
+}
+
+async function submitDownload(item) {
   try {
     const res = await fetch('/generate', {
       method: 'POST',
@@ -290,33 +325,56 @@ async function start(item) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Something went wrong.');
+    if (!items.includes(item)) return;
     item.jobId = data.job_id;
     item.status = 'queued';
     updateRow(item);
-    poll(item);
+    if (!downloadPollTimer && !downloadPollInFlight) downloadPollTimer = setTimeout(pollDownloads, 300);
   } catch (err) {
     fail(item, err.message);
   }
 }
 
-async function poll(item) {
-  if (!items.includes(item)) return; // removed by the user
+async function pollDownloads() {
+  downloadPollTimer = null;
+  downloadPollInFlight = true;
+  const active = items.filter(item => item.jobId && !['done', 'error'].includes(item.status));
   try {
-    const res = await fetch(`/status/${item.jobId}`);
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Lost track of this download.');
-    item.status = data.status;
-    item.progress = data.progress || 0;
-    if (data.title) item.title = data.title;
-    // Fill in whatever the playlist didn't tell us (always the case for single links).
-    const card = data.card || {};
-    for (const k of ['thumbnail', 'duration', 'channel']) if (card[k] && !item[k]) item[k] = card[k];
-    if (data.status === 'error') return fail(item, data.error);
-    updateRow(item);
+    for (let offset = 0; offset < active.length; offset += 500) {
+      const batch = active.slice(offset, offset + 500).map(item => ({ item, jobId: item.jobId }));
+      const res = await fetch('/statuses', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: batch.map(entry => entry.jobId) }) });
+      const response = await res.json();
+      if (!res.ok) throw new Error(response.error || 'Lost track of these downloads.');
+      for (const { item, jobId } of batch) {
+        if (!items.includes(item) || item.jobId !== jobId) continue;
+        const data = response.jobs[jobId] || { status: 'error', error: 'Unknown download. Retry to start again.' };
+        const snapshot = JSON.stringify(data);
+        if (snapshot === item.lastSnapshot) continue;
+        item.lastSnapshot = snapshot;
+        item.status = data.status === 'expired' ? 'error' : data.status;
+        item.error = data.error;
+        item.progress = data.progress || 0;
+        if (data.title) item.title = data.title;
+        const card = data.card || {};
+        for (const k of ['thumbnail', 'duration', 'channel']) if (card[k] && !item[k]) item[k] = card[k];
+        updateRow(item);
+      }
+    }
     render();
-    if (data.status !== 'done') setTimeout(() => poll(item), 1200);
   } catch (err) {
-    fail(item, err.message === 'Failed to fetch' ? 'Lost connection to the server.' : err.message);
+    for (const item of active) {
+      if (!items.includes(item) || ['done', 'error'].includes(item.status)) continue;
+      item.status = 'error';
+      item.error = err.message === 'Failed to fetch' ? 'Lost connection to the server.' : err.message;
+      updateRow(item);
+    }
+    render();
+  } finally {
+    downloadPollInFlight = false;
+    if (items.some(item => item.jobId && !['done', 'error'].includes(item.status))) {
+      downloadPollTimer = setTimeout(pollDownloads, 1500);
+    }
   }
 }
 

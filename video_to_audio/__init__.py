@@ -16,6 +16,11 @@ def create_app(overrides: dict | None = None) -> Flask:
         app.config.update(overrides)
     os.makedirs(app.config["DOWNLOAD_DIR"], exist_ok=True)
 
+    from .collector import CollectionStore
+    store = CollectionStore(app.config["COLLECTION_DB"])
+    store.recover_interrupted()
+    app.extensions["collections"] = store
+
     from .routes import bp
     app.register_blueprint(bp)
     return app

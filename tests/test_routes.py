@@ -24,6 +24,21 @@ def test_unknown_routes_return_json(client):
     assert client.get("/no-such-page").is_json
 
 
+def test_batch_status_keeps_jobs_separate_and_handles_missing_ids(client, make_job):
+    make_job("one", title="One")
+    make_job("two", title="Two")
+    response = client.post("/statuses", json={"ids": ["one", "two", "missing"]})
+    assert response.status_code == 200
+    jobs = response.get_json()["jobs"]
+    assert jobs["one"]["title"] == "One" and jobs["two"]["title"] == "Two"
+    assert jobs["one"]["status"] == "done" and jobs["missing"] is None
+    assert "filename" not in jobs["one"]
+    assert client.post("/statuses", json={"ids": ["one"] * 1001}).status_code == 400
+    assert client.post("/statuses", json={"ids": "one"}).status_code == 400
+    assert client.post("/statuses", json={"ids": [1]}).status_code == 400
+    assert client.post("/statuses", json=[]).status_code == 400
+
+
 def test_download_and_zip(client, make_job):
     make_job("j1", title="Song")
     make_job("j2", title="Song")
