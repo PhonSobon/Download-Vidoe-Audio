@@ -155,3 +155,18 @@ def test_files_are_named_after_the_video_title(client, make_job):
     res = client.get("/download/k1")
     assert "filename*=UTF-8''" in res.headers["Content-Disposition"]
     res.close()
+
+
+def test_facebook_page_links_get_a_clear_error():
+    import pytest
+    from video_to_audio.downloader import check_facebook_page, expand_playlist
+    for url in ["https://www.facebook.com/www.mptc.gov.kh/reels/", "https://www.facebook.com/www.mptc.gov.kh",
+                "https://m.facebook.com/somepage/videos/"]:
+        with pytest.raises(ValueError, match="Facebook page"):
+            check_facebook_page(url)
+    for url in ["https://www.facebook.com/reel/1234567890", "https://www.facebook.com/somepage/videos/1234567890",
+                "https://www.facebook.com/watch?v=123", "https://www.facebook.com/share/r/abc/",
+                "https://www.youtube.com/@channel"]:
+        check_facebook_page(url)
+    with pytest.raises(ValueError, match="Import links"):
+        expand_playlist("https://www.facebook.com/www.mptc.gov.kh/reels/")

@@ -71,3 +71,13 @@ def test_photo_post_mp4_explains_audio_option_without_fetching(monkeypatch, tmp_
 def test_other_links_are_unchanged(url):
     assert downloader.prepare_download_url(url, "mp3") == url
     assert downloader.prepare_download_url(url, "mp4") == url
+
+
+@pytest.mark.parametrize("url, skips_music", [
+    ("https://www.tiktok.com/@arom2966/video/7558788092166032647", True),
+    ("https://vt.tiktok.com/ZSabc123/", True),
+    (PHOTO_URL, False),
+    ("https://www.youtube.com/watch?v=abc", False),
+])
+def test_tiktok_video_mp3_uses_video_audio_not_music_track(url, skips_music):
+    assert ("format_id!=audio" in downloader.audio_format(url)) is skips_music

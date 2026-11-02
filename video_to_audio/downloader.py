@@ -31,12 +31,6 @@ DOWNLOAD_SLOTS = threading.BoundedSemaphore(Config.MAX_PARALLEL_DOWNLOADS)
 DOWNLOAD_QUEUE = Queue()
 DOWNLOAD_WORKERS_LOCK = threading.Lock()
 DOWNLOAD_WORKERS_STARTED = False
-
-# Generic "is this a real URL" check. We don't restrict to one site anymore --
-# yt-dlp itself supports YouTube, Facebook, Instagram, TikTok, X/Twitter,
-# Vimeo, Reddit, SoundCloud, and hundreds of other sites. If a pasted link
-# isn't from a supported site, yt-dlp will raise an error and the job will
-# show that error to the user instead of silently failing here.
 GENERIC_URL_RE = re.compile(r"^https?://[^\s]+\.[^\s]{2,}")
 
 
@@ -44,8 +38,27 @@ def is_valid_url(url: str) -> bool:
     return bool(url) and bool(GENERIC_URL_RE.match(url.strip()))
 
 
+# A Facebook page or one of its tabs, e.g. facebook.com/www.mptc.gov.kh/reels/.
+# yt-dlp only downloads single Facebook videos/reels; it can't list a page.
+FACEBOOK_PAGE_PATH = re.compile(r"/(?!reel/|watch/?$|share/|story\.php|video\.php)[^/]+/?"
+                                r"(?:reels|videos)?/?")
+
+
+def check_facebook_page(url: str):
+    """Raise a clear error for a Facebook page link instead of yt-dlp's
+    "Unsupported URL"."""
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    if (host == "facebook.com" or host.endswith(".facebook.com")) and not parts.query \
+            and FACEBOOK_PAGE_PATH.fullmatch(parts.path):
+        raise ValueError("This is a Facebook page, not a single video. yt-dlp can't list all of a "
+                         "page's reels. Open each reel (facebook.com/reel/<id>) and paste its link, or "
+                         "put the reel links in a .txt file (one per line) and use Import links.")
+
+
 def prepare_download_url(url: str, fmt: str) -> str:
     """Let yt-dlp extract a TikTok photo post's sound through its video URL."""
+    check_facebook_page(url)
     parts = urlsplit(url)
     if parts.hostname not in {"tiktok.com", "www.tiktok.com", "m.tiktok.com"}:
         return url
@@ -57,6 +70,19 @@ def prepare_download_url(url: str, fmt: str) -> str:
                          "isn't supported.")
     return urlunsplit((parts.scheme, "www.tiktok.com", parts.path.replace("/photo/", "/video/", 1),
                        parts.query, parts.fragment))
+
+
+def audio_format(url: str) -> str:
+    """yt-dlp format selector for MP3 downloads.
+
+    TikTok lists the post's background music as a separate "audio" format. For a
+    video post that is often only the song (and can be shorter than the video),
+    so take the audio from the video itself. Photo posts only have that music.
+    """
+    host = urlsplit(url).hostname or ""
+    if (host == "tiktok.com" or host.endswith(".tiktok.com")) and "/photo/" not in url:
+        return "bestaudio[format_id!=audio]/best[format_id!=audio]/best"
+    return "bestaudio/best"
 
 
 # Characters Windows doesn't allow in file names, plus control characters.
@@ -217,7 +243,7 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
 
         if fmt == "mp3":
             ydl_opts.update({
-                "format": "bestaudio/best",
+                "format": audio_format(url),
                 "postprocessors": [
                     {
                         "key": "FFmpegExtractAudio",
@@ -357,6 +383,7 @@ def expand_playlist(url: str, limit: int | None = None, start: int = 1) -> dict:
     be fetched in batches by passing the previous "next_start". "total" is how
     many the whole playlist has (None if unknown). A plain video link comes back
     as a one-item list. Raises on failure."""
+    check_facebook_page(url)
     ydl_opts = dict(COMMON_OPTS)
     ydl_opts.update({
         "noplaylist": False,
