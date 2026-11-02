@@ -5,6 +5,8 @@ import re
 import threading
 import time
 from datetime import datetime, timezone
+from queue import Queue
+from urllib.parse import urlsplit, urlunsplit
 
 import yt_dlp
 from yt_dlp.utils import download_range_func
@@ -26,6 +28,9 @@ except Exception:
 JOBS = {}
 
 DOWNLOAD_SLOTS = threading.BoundedSemaphore(Config.MAX_PARALLEL_DOWNLOADS)
+DOWNLOAD_QUEUE = Queue()
+DOWNLOAD_WORKERS_LOCK = threading.Lock()
+DOWNLOAD_WORKERS_STARTED = False
 
 # Generic "is this a real URL" check. We don't restrict to one site anymore --
 # yt-dlp itself supports YouTube, Facebook, Instagram, TikTok, X/Twitter,
@@ -37,6 +42,21 @@ GENERIC_URL_RE = re.compile(r"^https?://[^\s]+\.[^\s]{2,}")
 
 def is_valid_url(url: str) -> bool:
     return bool(url) and bool(GENERIC_URL_RE.match(url.strip()))
+
+
+def prepare_download_url(url: str, fmt: str) -> str:
+    """Let yt-dlp extract a TikTok photo post's sound through its video URL."""
+    parts = urlsplit(url)
+    if parts.hostname not in {"tiktok.com", "www.tiktok.com", "m.tiktok.com"}:
+        return url
+    if not re.fullmatch(r"/@[\w.-]+/photo/\d+/?", parts.path):
+        return url
+    if fmt != "mp3":
+        raise ValueError("This TikTok link is a photo/slideshow post. Choose MP3 audio "
+                         "to download its sound. Exporting the photos as an MP4 slideshow "
+                         "isn't supported.")
+    return urlunsplit((parts.scheme, "www.tiktok.com", parts.path.replace("/photo/", "/video/", 1),
+                       parts.query, parts.fragment))
 
 
 # Characters Windows doesn't allow in file names, plus control characters.
@@ -101,10 +121,30 @@ if FFMPEG_PATH:
 def start_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, download_dir: str):
     JOBS[job_id] = {"status": "queued", "filename": None, "error": None,
                     "progress": 0, "title": None, "url": url}
-    thread = threading.Thread(
-        target=run_download, args=(job_id, url, fmt, limit_minutes, download_dir), daemon=True
-    )
-    thread.start()
+    # A large CSV uses a fixed number of workers rather than a thread per URL.
+    global DOWNLOAD_WORKERS_STARTED
+    with DOWNLOAD_WORKERS_LOCK:
+        if not DOWNLOAD_WORKERS_STARTED:
+            for index in range(max(1, Config.MAX_PARALLEL_DOWNLOADS)):
+                threading.Thread(target=_download_worker, args=(DOWNLOAD_QUEUE,), daemon=True,
+                                 name=f"audio-download-{index}").start()
+            DOWNLOAD_WORKERS_STARTED = True
+    DOWNLOAD_QUEUE.put((job_id, url, fmt, limit_minutes, download_dir))
+
+
+def _download_worker(queue):
+    while True:
+        args = queue.get()
+        try:
+            if args is None:
+                return
+            run_download(*args)
+        except Exception as exc:
+            # A failed job must not stop this worker or strand the rest of a batch.
+            if args[0] in JOBS:
+                JOBS[args[0]].update(status="error", error=str(exc))
+        finally:
+            queue.task_done()
 
 
 def run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, download_dir: str):
@@ -170,6 +210,7 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
     outtmpl = os.path.join(download_dir, f"{unique_name}.%(ext)s")
 
     try:
+        extract_url = prepare_download_url(url, fmt)
         ydl_opts = dict(COMMON_OPTS)
         ydl_opts["outtmpl"] = outtmpl
         ydl_opts["progress_hooks"] = [_make_progress_hook(job_id)]
@@ -199,7 +240,7 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
             ydl_opts["force_keyframes_at_cuts"] = True
 
         with cookies.ydl_options() as cookie_opts, yt_dlp.YoutubeDL({**ydl_opts, **cookie_opts}) as ydl:
-            info = ydl.extract_info(url, download=True)
+            info = ydl.extract_info(extract_url, download=True)
             title = clean_title(info) or "download"
         JOBS[job_id]["card"] = video_card(info)
 
@@ -207,7 +248,7 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
         # the original video/page (see huggingface.hf_row).
         JOBS[job_id]["source"] = {
             "id": info.get("id"),
-            "url": info.get("webpage_url") or url,
+            "url": url if extract_url != url else info.get("webpage_url") or url,
             "platform": info.get("extractor_key") or info.get("extractor"),
             "channel": info.get("channel") or info.get("uploader"),
             "channel_url": info.get("channel_url") or info.get("uploader_url"),
