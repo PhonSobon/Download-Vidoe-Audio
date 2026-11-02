@@ -20,6 +20,9 @@ class Config:
     # machine and the network (and YouTube's rate limits) from being overwhelmed.
     MAX_PARALLEL_DOWNLOADS = int(os.environ.get("MAX_PARALLEL_DOWNLOADS", "3"))
 
+    # Collected links survive restarts and are separate from temporary audio.
+    COLLECTION_DB = os.environ.get("COLLECTION_DB", str(PROJECT_ROOT / "data" / "collections.sqlite3"))
+
     # YouTube sometimes answers "Sign in to confirm you're not a bot". Passing
     # the cookies of a browser that is logged in to YouTube gets past that.
     # COOKIES_FILE is a Netscape-format cookies.txt; uploading one on the page

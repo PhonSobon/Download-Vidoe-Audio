@@ -18,13 +18,70 @@
     </div>
   </header>
 
-  <section class="card">
+  <section class="card" aria-labelledby="collectorHeading">
+    <div class="hf-head">
+      <h2 id="collectorHeading">TikTok link collector</h2>
+      <p>Collect post links from selected creators, export a CSV, then download their audio.</p>
+    </div>
+    <form id="collectorForm">
+      <label class="sub-label" for="creatorProfiles">Creator profile links (one per line, up to 10)</label>
+      <textarea id="creatorProfiles" rows="3" required spellcheck="false"
+        placeholder="https://www.tiktok.com/@creator"></textarea>
+      <div class="collector-grid">
+        <div>
+          <label class="sub-label" for="collectorLimit">Posts to inspect per creator</label>
+          <input id="collectorLimit" type="number" min="1" max="500" step="1" value="50" required>
+        </div>
+        <div>
+          <label class="sub-label" for="collectorTopic">Topic label (optional)</label>
+          <input id="collectorTopic" type="text" maxlength="100" placeholder="Food reviews">
+        </div>
+        <div>
+          <label class="sub-label" for="collectorFrom">Posted on or after (optional)</label>
+          <input id="collectorFrom" type="date">
+        </div>
+        <div>
+          <label class="sub-label" for="collectorTo">Posted on or before (optional)</label>
+          <input id="collectorTo" type="date">
+        </div>
+      </div>
+      <label class="sub-label" for="collectorKeywords">Caption keywords (optional, separated by commas)</label>
+      <input id="collectorKeywords" type="text" maxlength="500" placeholder="review, food, រីវីវ">
+      <p class="hint">Matches any keyword in available captions. Filters may return fewer links than the inspection limit.
+        Check the downloaded audio to confirm Khmer speech. Collected links are saved across restarts.</p>
+      <div class="actions">
+        <button class="primary" id="collectBtn" type="submit">Collect links</button>
+        <button id="cancelCollection" type="button" hidden>Cancel collection</button>
+      </div>
+    </form>
+    <div id="collectorStatus" class="collector-status" role="status" aria-live="polite"></div>
+    <div id="collectorErrors" class="collector-errors" role="alert"></div>
+    <div id="collectionResults" hidden>
+      <div class="actions">
+        <a class="btn" id="exportCollection" href="#">Export CSV</a>
+        <button id="useCollection" type="button">Add links to MP3 downloads</button>
+      </div>
+      <div class="collector-preview" id="collectorPreview"></div>
+      <p class="hint">Preview shows the first 10 links. Export CSV includes every collected link.
+        Save completed MP3s below: audio files are temporary and are deleted after
+        {{ config.FILE_LIFETIME_MINUTES|int }} minutes or a server restart.</p>
+    </div>
+    <label class="sub-label" for="collectionHistory">Saved collections</label>
+    <select id="collectionHistory"><option value="">No saved collections yet</option></select>
+  </section>
+
+  <section class="card" id="downloadSection">
     <label class="field" for="urlInput">Paste a link, then press Enter</label>
     <div class="add-row">
       <input type="text" id="urlInput" spellcheck="false" autocomplete="off"
         placeholder="https://www.youtube.com/watch?v=...  or a playlist link">
       <button id="addBtn">Add</button>
     </div>
+    <div class="actions">
+      <input id="linksFile" type="file" accept=".csv,.txt,text/csv,text/plain" hidden>
+      <button class="small" id="importLinks" type="button">Import links from CSV / TXT</button>
+    </div>
+    <div class="hint">CSV files need a <code>url</code> column. TXT files need one post link per line.</div>
 
     <div class="label-row pending-head">
       <span class="field">Your links</span>
@@ -143,5 +200,6 @@
 </template>
 
 <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+<script src="{{ url_for('static', filename='js/collector.js') }}"></script>
 </body>
 </html>

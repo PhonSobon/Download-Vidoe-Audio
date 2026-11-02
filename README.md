@@ -72,6 +72,61 @@ The page tells you when a playlist had more videos than it added.
 
 Up to 3 links download at once; the rest wait their turn.
 
+**TikTok photo posts:** paste the original `/photo/...` link and select
+**MP3 audio** to download its soundtrack. The app automatically uses the
+matching video URL for audio extraction and keeps the original photo link
+in the source metadata. Downloading the photos or generating an MP4
+slideshow from them is not supported.
+
+### Collect TikTok links from creators
+
+Use the **TikTok link collector** at the top of the page:
+
+1. Enter up to 10 creator profile links, one per line, such as
+   `https://www.tiktok.com/@creator`.
+2. Choose how many posts to inspect per creator (1–500, default 50).
+   Optionally add a topic label, date range, and comma-separated caption
+   keywords. A post matches if its available caption contains **any** keyword.
+3. Click **Collect links**. Collection runs in the background; the page shows
+   progress, a preview, and any creator-specific errors. **Cancel collection**
+   stops after the current request; already collected links stay available.
+4. Click **Export CSV** to save `tiktok_links.csv`, or **Add links to MP3
+   downloads**, then **Download as MP3** in the downloader below.
+
+The inspection limit applies **before filtering**, so the number of collected
+links may be smaller. Date filters include both boundary dates and omit posts
+whose date is unavailable. Topic labels are notes, not an automatic topic
+classifier. Country and spoken language are not inferred; listen to the audio
+to check that it contains Khmer speech. This feature collects from selected
+creators; it does not search TikTok by category or keyword.
+
+Collections are saved in `data/collections.sqlite3` (ignored by git) and can be
+reopened from **Saved collections** after restarting. Interrupted runs retain
+their collected links; select the saved run and collect again to retry its
+profiles. One collection runs at a time. TikTok can block or restrict profile
+listing even when individual posts work; errors are shown without discarding
+results from other creators. Updating `yt-dlp` may help when TikTok changes.
+The requirements include yt-dlp's `curl-cffi` extra for sites that need its
+browser-compatible networking support.
+
+The UTF-8 CSV contains `url`, `post_id`, `creator`, `title`, `upload_date`,
+`duration_seconds`, and `topic`. Duplicate post IDs are removed within each
+collection. Durations are source metadata, not measured Khmer speech hours.
+
+### Import a saved link list
+
+Click **Import links from CSV / TXT** in the downloader. CSV needs a `url`
+column; TXT needs one individual post URL per line. Up to 10,000 rows / 2 MB
+can be imported at a time. Blank rows are ignored and invalid or duplicate
+links are skipped. TikTok photo/video links with the same post ID count as
+duplicates. Imported links are added to the pending list with MP3 selected;
+click **Download as MP3** to start.
+
+Only collected links are stored permanently. Audio downloads and the audio
+queue still follow the existing temporary/session behavior: save completed
+MP3s or ZIPs before they expire or you restart the server. A fixed worker
+pool handles imported batches without creating one thread per link.
+
 ### Settings
 
 Each setting in [video_to_audio/config.py](video_to_audio/config.py) can be
@@ -82,6 +137,7 @@ app:
 | --- | --- | --- |
 | `MAX_PARALLEL_DOWNLOADS` | `3` | Links that download at the same time |
 | `DOWNLOAD_DIR` | `video_to_audio` in the system temp folder | Working folder for files waiting to be saved; its contents are deleted automatically |
+| `COLLECTION_DB` | `data/collections.sqlite3` in this project | Persistent creator collection history and collected post links |
 | `FILE_LIFETIME_MINUTES` | `60` | How long a finished file stays available on the page before it's deleted |
 | `HOST` / `PORT` | `127.0.0.1` / `5000` | Address the server listens on |
 | `HF_TOKEN` | not set | Hugging Face token used when the HF_TOKEN box is left blank |
@@ -204,6 +260,7 @@ Convert-video-to-audio/
 │   ├── __main__.py           # python -m video_to_audio
 │   ├── config.py             # settings (overridable by environment variables)
 │   ├── downloader.py         # yt-dlp download jobs and playlist expansion
+│   ├── collector.py          # creator link collection, SQLite history, CSV import/export
 │   ├── huggingface.py        # Parquet build + push to a Hugging Face dataset
 │   ├── routes.py             # HTTP endpoints
 │   ├── templates/index.html  # the page

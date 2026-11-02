@@ -88,7 +88,7 @@ ol#pending .tag { font-size: 11px; font-weight: 700; padding: 2px 6px; border-ra
 @keyframes pop { from { opacity: 0; transform: translateY(-4px); } }
 .pending-empty { color: var(--muted); font-size: 13px; padding: 14px; text-align: center; border: 1px dashed var(--border); border-radius: 10px; }
 
-input[type="text"], input[type="number"], input[type="password"], select {
+input[type="text"], input[type="number"], input[type="password"], input[type="date"], select {
   width: 100%;
   padding: 12px 14px;
   border-radius: 10px;
@@ -100,7 +100,7 @@ input[type="text"], input[type="number"], input[type="password"], select {
   outline: none;
   transition: border-color .15s, box-shadow .15s;
 }
-input[type="text"]:focus, input[type="number"]:focus, input[type="password"]:focus, select:focus {
+input[type="text"]:focus, input[type="number"]:focus, input[type="password"]:focus, input[type="date"]:focus, textarea:focus, select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
 }
@@ -122,7 +122,7 @@ input[type="text"]:focus, input[type="number"]:focus, input[type="password"]:foc
 
 .sub-label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 
-.actions { display: flex; gap: 10px; margin-top: 18px; }
+.actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
 button {
   font: inherit; font-weight: 600; font-size: 14px;
   border-radius: 10px; padding: 11px 18px; cursor: pointer;
@@ -224,6 +224,21 @@ ul#queue { list-style: none; margin: 0; padding: 0; display: flex; flex-directio
 
 .hf-head h2 { font-size: 16px; margin: 0; }
 .hf-head p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+.collector-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+#collectorForm > .sub-label, label[for="collectionHistory"] { display: block; margin-top: 16px; }
+textarea { resize: vertical; font: inherit; color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; width: 100%; }
+.collector-grid input, #collectorKeywords, #collectionHistory { width: 100%; min-width: 0; }
+.collector-grid { margin-top: 12px; }
+.collector-status { font-size: 14px; margin-top: 12px; }
+.collector-errors { color: var(--err); font-size: 13px; overflow-wrap: anywhere; }
+.collector-errors:empty, .collector-status:empty { display: none; }
+.collector-preview { max-height: 240px; overflow: auto; margin-top: 12px; font-size: 13px; }
+.collector-preview ol { margin: 0; padding-left: 24px; }
+.collector-preview li { margin: 8px 0; overflow-wrap: anywhere; }
+.collector-preview a { color: var(--accent); }
+.collector-preview small { display: block; color: var(--muted); }
+[hidden] { display: none !important; }
 input[type="password"] { width: 100%; }
 .check { display: flex; align-items: center; gap: 8px; font-size: 14px; margin-top: 14px; cursor: pointer; }
 .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
@@ -244,6 +259,7 @@ input[type="password"] { width: 100%; }
 footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 22px; }
 
 @media (max-width: 520px) {
+  .collector-grid { grid-template-columns: 1fr; }
   .wrap { padding-top: 24px; }
   .item { flex-wrap: wrap; }
   .item .thumb { width: 120px; }
