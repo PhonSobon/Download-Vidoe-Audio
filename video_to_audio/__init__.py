@@ -1,5 +1,7 @@
 """Video & Audio Downloader: a small local web app that turns video links
 into MP3/MP4 files and can push the MP3s to a Hugging Face dataset."""
+from __future__ import annotations
+
 import os
 
 from flask import Flask

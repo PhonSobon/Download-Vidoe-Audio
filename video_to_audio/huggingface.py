@@ -7,6 +7,8 @@ References table that grows by one row per clip.
 `datasets.load_dataset("<user>/<repo>")` then loads all pushes together as
 one "train" split.
 """
+from __future__ import annotations
+
 import json
 import os
 import re

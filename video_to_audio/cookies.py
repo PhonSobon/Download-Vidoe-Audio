@@ -2,6 +2,8 @@
 a bot"; the cookies of a logged-in browser session get past that. They come
 from a cookies.txt the user uploads on the page (saved at Config.COOKIES_FILE)
 or, failing that, straight from a browser (Config.COOKIES_FROM_BROWSER)."""
+from __future__ import annotations
+
 import os
 import shutil
 import tempfile

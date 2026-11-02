@@ -45,7 +45,7 @@ function renderPending() {
     if (isPlaylist(url)) {
       const tag = document.createElement('span');
       tag.className = 'tag';
-      tag.textContent = 'PLAYLIST';
+      tag.textContent = isShortsTab(url) ? 'SHORTS' : 'PLAYLIST';
       li.append(tag);
     }
     const remove = document.createElement('button');
@@ -89,11 +89,23 @@ $('clearPending').addEventListener('click', () => { pending.length = 0; renderPe
 // Playlist links: youtube.com/playlist?list=... or a video opened from a
 // playlist (watch?v=...&list=...). "RD..." lists are YouTube's endless
 // auto-generated Mixes, so those are treated as the single video.
+// A channel's Shorts tab (youtube.com/@name/shorts) is read like a playlist too.
 function isPlaylist(url) {
+  if (isShortsTab(url)) return true;
   try {
     const u = new URL(url);
     const list = u.searchParams.get('list');
     return !!list && !list.startsWith('RD');
+  } catch { return false; }
+}
+
+// youtube.com/@name/shorts, /channel/ID/shorts, /c/name/shorts, /user/name/shorts.
+// A single Short (youtube.com/shorts/ID) is a plain video, not this.
+function isShortsTab(url) {
+  try {
+    const u = new URL(url);
+    return u.hostname.replace(/^(www|m)\./, '') === 'youtube.com'
+      && /^\/(@[^/]+|(channel|c|user)\/[^/]+)\/shorts\/?$/.test(u.pathname);
   } catch { return false; }
 }
 

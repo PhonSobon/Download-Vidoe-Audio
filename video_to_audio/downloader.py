@@ -114,6 +114,24 @@ def run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, d
         _run_download(job_id, url, fmt, limit_minutes, download_dir)
 
 
+# Facebook titles reels as "9.9K views · 340 reactions | <caption> | <page>".
+FB_STATS_PREFIX = re.compile(
+    r"^[\d.,]+\s*[KMB]?\s+views?(\s*·\s*[\d.,]+\s*[KMB]?\s+reactions?)?\s*\|\s*", re.I)
+
+
+def clean_title(info: dict) -> str | None:
+    """The video's title, minus the view/reaction counts and page name that
+    Facebook packs into it, so file names and dataset rows get the caption."""
+    title = info.get("title")
+    if not title or not (info.get("extractor_key") or info.get("ie_key") or "").startswith("Facebook"):
+        return title
+    cleaned = FB_STATS_PREFIX.sub("", title)
+    uploader = info.get("uploader") or info.get("channel")
+    if uploader and cleaned.endswith(f" | {uploader}"):
+        cleaned = cleaned[:-len(uploader) - 3]
+    return cleaned.strip() or title
+
+
 def video_card(info: dict) -> dict:
     """What the page shows next to a video: thumbnail, duration (seconds) and
     channel. Works for full video info and for flat playlist entries."""
@@ -133,7 +151,7 @@ def _make_progress_hook(job_id: str):
         job = JOBS[job_id]
         info = d.get("info_dict") or {}
         if info.get("title") and not job.get("title"):
-            job["title"] = info["title"]
+            job["title"] = clean_title(info)
         if info and not job.get("card"):
             job["card"] = video_card(info)
         if d.get("status") == "downloading":
@@ -182,7 +200,7 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
 
         with cookies.ydl_options() as cookie_opts, yt_dlp.YoutubeDL({**ydl_opts, **cookie_opts}) as ydl:
             info = ydl.extract_info(url, download=True)
-            title = info.get("title", "download")
+            title = clean_title(info) or "download"
         JOBS[job_id]["card"] = video_card(info)
 
         # Where the audio came from, kept so a Hugging Face push can credit
@@ -232,6 +250,9 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
             msg += " (This link may be private, age-restricted, or require login -- those can't be downloaded.)"
         elif "403" in msg or "forbidden" in low:
             msg += " (Try running 'pip install -U yt-dlp' to update to the latest version, then retry.)"
+        elif "audio codec" in low:
+            # yt-dlp's way of saying the video has no audio track at all.
+            msg = "This video has no sound, so there's no audio to save as MP3. Choose MP4 to get the video."
         elif "ffmpeg" in low:
             msg += " (Try running 'pip install -U imageio-ffmpeg' and restarting the app.)"
         JOBS[job_id]["status"] = "error"
@@ -315,7 +336,7 @@ def expand_playlist(url: str, limit: int | None = None, start: int = 1) -> dict:
     entries = info.get("entries")
     if entries is None:
         return {"title": info.get("title"), "channel": channel, "total": 1,
-                "videos": [{"url": url, "title": info.get("title"), "index": 1, **video_card(info)}],
+                "videos": [{"url": url, "title": clean_title(info), "index": 1, **video_card(info)}],
                 "next_start": 2, "has_more": False}
 
     videos = []
