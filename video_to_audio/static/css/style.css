@@ -171,6 +171,8 @@ a.btn {
   text-decoration: none; font-weight: 600; font-size: 13px; padding: 6px 12px; border-radius: 8px;
   background: var(--ok); color: #fff; white-space: nowrap;
 }
+/* Caption (.vtt) files next to a finished download's Save button. */
+a.btn.small { font-weight: 500; padding: 5px 9px; background: transparent; color: var(--ok); border: 1px solid var(--ok); }
 
 #formError { color: var(--err); font-size: 13px; margin-top: 10px; min-height: 0; }
 #formError:empty { display: none; }

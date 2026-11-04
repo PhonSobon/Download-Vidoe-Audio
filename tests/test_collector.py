@@ -133,7 +133,9 @@ def test_import_removes_duplicate_post_ids_and_bad_rows():
 
 @pytest.mark.parametrize("data,name", [(b"title\nhello", "links.csv"), (b"\xff", "links.txt"),
     (b"hello", "links.json"), (b"https://www.tiktok.com/@creator", "links.txt"),
-    (b"a" * (collector.MAX_IMPORT_BYTES + 1), "links.txt")])
+    (b"a" * (collector.MAX_IMPORT_BYTES + 1), "links.txt")],
+    # Short ids: a 2 MB parameter in the test id overflows Windows' env var limit.
+    ids=["csv-no-url-column", "not-utf8", "wrong-extension", "profile-link", "too-large"])
 def test_invalid_imports(data, name):
     with pytest.raises(collector.CollectionError):
         collector.import_links(data, name)

@@ -47,7 +47,7 @@ function renderPending() {
     if (isPlaylist(url)) {
       const tag = document.createElement('span');
       tag.className = 'tag';
-      tag.textContent = isShortsTab(url) ? 'SHORTS' : 'PLAYLIST';
+      tag.textContent = isTikTokProfile(url) ? 'PROFILE' : isShortsTab(url) ? 'SHORTS' : 'PLAYLIST';
       li.append(tag);
     }
     const remove = document.createElement('button');
@@ -106,11 +106,19 @@ $('clearPending').addEventListener('click', () => { pending.length = 0; renderPe
 // auto-generated Mixes, so those are treated as the single video.
 // A channel's Shorts tab (youtube.com/@name/shorts) is read like a playlist too.
 function isPlaylist(url) {
-  if (isShortsTab(url)) return true;
+  if (isShortsTab(url) || isTikTokProfile(url)) return true;
   try {
     const u = new URL(url);
     const list = u.searchParams.get('list');
     return !!list && !list.startsWith('RD');
+  } catch { return false; }
+}
+
+// tiktok.com/@name: every post of a TikTok creator.
+function isTikTokProfile(url) {
+  try {
+    const u = new URL(url);
+    return u.hostname.replace(/^(www|m)\./, '') === 'tiktok.com' && /^\/@[^/]+\/?$/.test(u.pathname);
   } catch { return false; }
 }
 
@@ -133,6 +141,11 @@ try {
 playlistLimit.addEventListener('change', () => {
   try { localStorage.setItem('playlistLimit', playlistLimit.value); } catch {}
 });
+const wantCaptions = $('wantCaptions');
+try { wantCaptions.checked = localStorage.getItem('wantCaptions') === '1'; } catch {}
+wantCaptions.addEventListener('change', () => {
+  try { localStorage.setItem('wantCaptions', wantCaptions.checked ? '1' : '0'); } catch {}
+});
 
 goBtn.addEventListener('click', () => {
   formError.textContent = '';
@@ -146,10 +159,11 @@ goBtn.addEventListener('click', () => {
   const fmt = selectedFormat();
   const limit = limitInput.value.trim() || null;
   const maxVideos = playlistLimit.value || null;
+  const captions = wantCaptions.checked;
   let skipped = 0;
   for (const url of pending) {
-    if (isPlaylist(url)) addPlaylist(url, fmt, limit, maxVideos);
-    else if (!addVideo(url, fmt, limit)) skipped++;
+    if (isPlaylist(url)) addPlaylist(url, fmt, limit, maxVideos, captions);
+    else if (!addVideo(url, fmt, limit, {}, undefined, captions)) skipped++;
   }
   noteSkipped(skipped);
   pending.length = 0;
@@ -184,14 +198,15 @@ function videoId(url) {
 // `video` is what's already known about it from its playlist:
 // { title, index, thumbnail, duration, channel }.
 // `playlist` is "Playlist - Channel" for the playlist the video came from, if any.
-function addVideo(url, fmt, limit, video = {}, playlist) {
+// `captions`: also save the video's timed captions (.vtt).
+function addVideo(url, fmt, limit, video = {}, playlist, captions = false) {
   const id = videoId(url);
   if (items.some(i => i.videoId === id && i.fmt === fmt)) return null;
   const { title, index, duration, channel } = video;
   // YouTube thumbnails can be shown straight away, before the download starts.
   const thumbnail = video.thumbnail || (id.startsWith('yt:') ? `https://i.ytimg.com/vi/${id.slice(3)}/mqdefault.jpg` : null);
   const item = { key: nextKey++, url, videoId: id, fmt, limit, title, index, thumbnail, duration, channel,
-                 playlist, status: 'starting', progress: 0 };
+                 playlist, captions, status: 'starting', progress: 0 };
   items.push(item);
   createRow(item);
   start(item);
@@ -203,8 +218,8 @@ function addVideo(url, fmt, limit, video = {}, playlist) {
 const playlists = [];
 const moreEl = $('playlistMore');
 
-function addPlaylist(url, fmt, limit, maxVideos) {
-  const pl = { url, fmt, limit, title: null, channel: null, total: null, added: 0, next: 1, busy: false };
+function addPlaylist(url, fmt, limit, maxVideos, captions) {
+  const pl = { url, fmt, limit, captions, title: null, channel: null, total: null, added: 0, next: 1, busy: false };
   loadPlaylist(pl, maxVideos);
 }
 
@@ -239,7 +254,7 @@ async function loadPlaylist(pl, count) {
     // Prepend in reverse so the queue shows the playlist in its original order.
     let skipped = 0;
     for (const v of [...data.videos].reverse()) {
-      if (!addVideo(v.url, pl.fmt, pl.limit, v, zipName)) skipped++;
+      if (!addVideo(v.url, pl.fmt, pl.limit, v, zipName, pl.captions)) skipped++;
     }
     noteSkipped(skipped);
     if (data.has_more && !playlists.includes(pl)) playlists.push(pl);
@@ -333,7 +348,7 @@ async function submitDownload(item) {
     const res = await fetch('/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: item.url, format: item.fmt, limit_minutes: item.limit })
+      body: JSON.stringify({ url: item.url, format: item.fmt, limit_minutes: item.limit, captions: !!item.captions })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Something went wrong.');
@@ -368,6 +383,8 @@ async function pollDownloads() {
         item.error = data.error;
         item.progress = data.progress || 0;
         if (data.title) item.title = data.title;
+        item.captionFiles = data.captions || [];
+        item.captionError = data.caption_error;
         const card = data.card || {};
         for (const k of ['thumbnail', 'duration', 'channel']) if (card[k] && !item[k]) item[k] = card[k];
         updateRow(item);
@@ -447,7 +464,7 @@ function updateRow(item) {
     queued: 'Waiting for a free slot…',
     downloading: item.progress ? `Downloading… ${Math.floor(item.progress)}%` : 'Fetching video info…',
     processing: item.fmt === 'mp3' ? 'Converting to MP3…' : 'Merging video and audio…',
-    done: `Ready · ${hostOf(item.url)}` + (item.hfRepo ? ` · On Hugging Face (${item.hfRepo})` : ''),
+    done: `Ready · ${hostOf(item.url)}` + captionNote(item) + (item.hfRepo ? ` · On Hugging Face (${item.hfRepo})` : ''),
     error: item.error || 'Failed',
   };
   line.textContent = labels[item.status] || item.status;
@@ -477,6 +494,15 @@ function updateRow(item) {
       location.href = a.href;
     };
     right.append(a);
+    // One small button per caption language, e.g. "VTT khm-KH".
+    (item.captionFiles || []).forEach((c, n) => {
+      const v = document.createElement('a');
+      v.className = 'btn small';
+      v.href = `/download/${item.jobId}/captions/${n}`;
+      v.textContent = `VTT ${c.lang}`;
+      v.title = c.filename;
+      right.append(v);
+    });
   }
   if (item.status === 'error') {
     const retry = document.createElement('button');
@@ -492,6 +518,13 @@ function updateRow(item) {
   remove.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
   remove.onclick = () => removeItem(item);
   right.append(remove);
+}
+
+function captionNote(item) {
+  if (!item.captions) return '';
+  const n = (item.captionFiles || []).length;
+  if (n) return ` · ${n} caption file${n > 1 ? 's' : ''}`;
+  return item.captionError ? ` · ${item.captionError}` : '';
 }
 
 function removeItem(item) {

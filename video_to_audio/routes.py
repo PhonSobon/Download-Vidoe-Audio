@@ -6,7 +6,8 @@ import zipfile
 from flask import Blueprint, Response, current_app, jsonify, render_template, request, send_file, send_from_directory
 
 from . import collector, cookies, huggingface
-from .downloader import JOBS, expand_playlist, is_valid_url, start_download, title_to_filename
+from .downloader import (JOBS, expand_playlist, is_valid_url, job_files, metadata_csv, start_download,
+                         title_to_filename)
 
 bp = Blueprint("main", __name__)
 
@@ -115,7 +116,8 @@ def generate():
                 return jsonify({"error": "Time limit must be a number of minutes."}), 400
 
         job_id = uuid.uuid4().hex[:12]
-        start_download(job_id, url, fmt, limit_minutes, current_app.config["DOWNLOAD_DIR"])
+        start_download(job_id, url, fmt, limit_minutes, current_app.config["DOWNLOAD_DIR"],
+                       captions=data.get("captions") is True)
         return jsonify({"job_id": job_id})
     except Exception as e:
         # Catch-all so the browser always gets JSON, never an HTML crash page
@@ -189,7 +191,7 @@ def statuses():
     ids = data.get("ids") if isinstance(data, dict) else None
     if not isinstance(ids, list) or len(ids) > 1000 or not all(isinstance(job_id, str) for job_id in ids):
         return jsonify({"error": "Send up to 1,000 job IDs."}), 400
-    fields = ("status", "progress", "title", "error", "card")
+    fields = ("status", "progress", "title", "error", "card", "captions", "caption_error")
     return jsonify({"jobs": {job_id: {key: JOBS[job_id].get(key) for key in fields}
                               if job_id in JOBS else None for job_id in ids}})
 
@@ -209,6 +211,19 @@ def download(job_id):
         as_attachment=True,
         download_name=job["filename"],
     )
+
+
+@bp.route("/download/<job_id>/captions/<int:index>")
+def download_caption(job_id, index):
+    """One of a finished job's timed caption files (.vtt), by position."""
+    job = JOBS.get(job_id)
+    if job and job.get("status") == "expired":
+        return jsonify({"error": job["error"]}), 410
+    captions = (job or {}).get("captions") or []
+    if not job or job.get("status") != "done" or not 0 <= index < len(captions):
+        return jsonify({"error": "Caption file not found"}), 404
+    name = captions[index]["filename"]
+    return send_from_directory(current_app.config["DOWNLOAD_DIR"], name, as_attachment=True, download_name=name)
 
 
 @bp.route("/push_hf", methods=["POST"])
@@ -258,7 +273,12 @@ def download_zip():
     # they go in the zip under the same names.
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as zf:
         for job in jobs:
-            zf.write(os.path.join(download_dir, job["filename"]), arcname=job["filename"])
+            for name in job_files(job):
+                zf.write(os.path.join(download_dir, name), arcname=name)
+        # With captions asked for, add each post's caption text and the
+        # names of its timed caption files.
+        if any(job.get("want_captions") for job in jobs):
+            zf.writestr("metadata.csv", metadata_csv(jobs).encode("utf-8"))
 
     # The page passes the playlist title as "name" when all the files came
     # from one playlist, so the zip is saved as e.g. "<playlist>.zip".

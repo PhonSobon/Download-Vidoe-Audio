@@ -1,5 +1,7 @@
 """yt-dlp download jobs. Each job runs in a background thread and reports
 its progress into the in-memory JOBS dict, which the page polls."""
+import csv
+import io
 import os
 import re
 import threading
@@ -144,9 +146,24 @@ if FFMPEG_PATH:
 # cookies.ydl_options) so a cookies.txt uploaded on the page works right away.
 
 
-def start_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, download_dir: str):
+# Timed captions (subtitles) saved next to the audio/video when asked for.
+# TikTok serves them as WebVTT or SRT (SRT is converted to VTT); "all" keeps
+# every language the post has, e.g. the original plus TikTok's translations.
+# YouTube's auto-generated captions are left out: they come in 100+
+# machine-translated languages.
+CAPTION_EXTS = (".vtt", ".srt", ".json")
+CAPTION_OPTS = {
+    "writesubtitles": True,
+    "subtitleslangs": ["all", "-live_chat"],
+    "subtitlesformat": "vtt/srt/best",
+}
+CAPTION_CONVERTER = {"key": "FFmpegSubtitlesConvertor", "format": "vtt", "when": "before_dl"}
+
+
+def start_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, download_dir: str,
+                   captions: bool = False):
     JOBS[job_id] = {"status": "queued", "filename": None, "error": None,
-                    "progress": 0, "title": None, "url": url}
+                    "progress": 0, "title": None, "url": url, "want_captions": captions}
     # A large CSV uses a fixed number of workers rather than a thread per URL.
     global DOWNLOAD_WORKERS_STARTED
     with DOWNLOAD_WORKERS_LOCK:
@@ -155,7 +172,7 @@ def start_download(job_id: str, url: str, fmt: str, limit_minutes: float | None,
                 threading.Thread(target=_download_worker, args=(DOWNLOAD_QUEUE,), daemon=True,
                                  name=f"audio-download-{index}").start()
             DOWNLOAD_WORKERS_STARTED = True
-    DOWNLOAD_QUEUE.put((job_id, url, fmt, limit_minutes, download_dir))
+    DOWNLOAD_QUEUE.put((job_id, url, fmt, limit_minutes, download_dir, captions))
 
 
 def _download_worker(queue):
@@ -173,11 +190,13 @@ def _download_worker(queue):
             queue.task_done()
 
 
-def run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, download_dir: str):
+def run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, download_dir: str,
+                 captions: bool = False):
     """fmt is 'mp3' or 'mp4'. limit_minutes, if set, downloads only the
-    first N minutes of the source video instead of the whole thing."""
+    first N minutes of the source video instead of the whole thing.
+    captions also saves the video's timed captions as .vtt files."""
     with DOWNLOAD_SLOTS:
-        _run_download(job_id, url, fmt, limit_minutes, download_dir)
+        _run_download(job_id, url, fmt, limit_minutes, download_dir, captions)
 
 
 # Facebook titles reels as "9.9K views · 340 reactions | <caption> | <page>".
@@ -230,7 +249,8 @@ def _make_progress_hook(job_id: str):
     return hook
 
 
-def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, download_dir: str):
+def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, download_dir: str,
+                  captions: bool = False):
     JOBS[job_id]["status"] = "downloading"
     unique_name = f"{job_id}"
     outtmpl = os.path.join(download_dir, f"{unique_name}.%(ext)s")
@@ -265,9 +285,24 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
             ydl_opts["download_ranges"] = download_range_func(None, [(0, end_seconds)])
             ydl_opts["force_keyframes_at_cuts"] = True
 
-        with cookies.ydl_options() as cookie_opts, yt_dlp.YoutubeDL({**ydl_opts, **cookie_opts}) as ydl:
-            info = ydl.extract_info(extract_url, download=True)
-            title = clean_title(info) or "download"
+        def fetch(opts):
+            with cookies.ydl_options() as cookie_opts, yt_dlp.YoutubeDL({**opts, **cookie_opts}) as ydl:
+                return ydl.extract_info(extract_url, download=True)
+
+        if captions:
+            with_captions = {**ydl_opts, **CAPTION_OPTS,
+                             "postprocessors": [CAPTION_CONVERTER, *ydl_opts.get("postprocessors", [])]}
+            try:
+                info = fetch(with_captions)
+            except yt_dlp.utils.DownloadError as exc:
+                # A caption that fails to download shouldn't cost the audio.
+                if "subtitle" not in str(exc).lower():
+                    raise
+                JOBS[job_id]["caption_error"] = "Captions couldn't be downloaded for this video."
+                info = fetch(ydl_opts)
+        else:
+            info = fetch(ydl_opts)
+        title = clean_title(info) or "download"
         JOBS[job_id]["card"] = video_card(info)
 
         # Where the audio came from, kept so a Hugging Face push can credit
@@ -282,6 +317,8 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
             "duration": info.get("duration"),
             "clip_minutes": limit_minutes,
         }
+        # The post's own text (on TikTok, the caption the creator wrote).
+        JOBS[job_id]["description"] = info.get("description") or info.get("title")
 
         # Find the actual produced file (extension is set by postprocessor/merge)
         expected_ext = "mp3" if fmt == "mp3" else "mp4"
@@ -290,7 +327,8 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
 
         if not os.path.exists(produced_path):
             # fallback: search for any file starting with unique_name
-            candidates = [f for f in os.listdir(download_dir) if f.startswith(unique_name)]
+            candidates = [f for f in os.listdir(download_dir)
+                          if f.startswith(unique_name) and not f.endswith(CAPTION_EXTS)]
             if candidates:
                 produced_file = candidates[0]
             else:
@@ -299,6 +337,9 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
         # yt-dlp saved it under the job id (unique while downloading); name
         # it after the video now that it's done.
         produced_file = rename_to_title(download_dir, produced_file, title)
+        JOBS[job_id]["captions"] = _rename_captions(download_dir, unique_name, produced_file)
+        if captions and not JOBS[job_id]["captions"] and not JOBS[job_id].get("caption_error"):
+            JOBS[job_id]["caption_error"] = "This video has no captions."
 
         JOBS[job_id]["status"] = "done"
         JOBS[job_id]["filename"] = produced_file
@@ -326,6 +367,49 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
         JOBS[job_id]["error"] = msg
 
 
+def _rename_captions(download_dir: str, unique_name: str, produced_file: str) -> list[dict]:
+    """Give "<job id>.<lang>.vtt" files the media file's name, e.g.
+    "Title.khm-KH.vtt" next to "Title.mp3". Returns [{"lang", "filename"}]."""
+    base = os.path.splitext(produced_file)[0]
+    found = []
+    for name in sorted(os.listdir(download_dir)):
+        if not (name.startswith(unique_name + ".") and name.endswith(CAPTION_EXTS)):
+            continue
+        new_name = base + name[len(unique_name):]
+        with RENAME_LOCK:
+            os.replace(os.path.join(download_dir, name), os.path.join(download_dir, new_name))
+        found.append({"lang": name[len(unique_name) + 1:].rsplit(".", 1)[0], "filename": new_name})
+    return found
+
+
+def job_files(job: dict) -> list[str]:
+    """Every file a finished job produced: the media file and its captions."""
+    return [job["filename"], *(c["filename"] for c in job.get("captions") or [])]
+
+
+METADATA_FIELDS = ["file", "caption_files", "title", "description", "url", "channel",
+                   "upload_date", "duration_seconds"]
+
+
+def metadata_csv(jobs: list[dict]) -> str:
+    """A metadata.csv for a zip: one row per file with the post's caption text
+    and the names of its timed caption (.vtt) files."""
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=METADATA_FIELDS)
+    writer.writeheader()
+    for job in jobs:
+        src = job.get("source") or {}
+        row = {"file": job["filename"],
+               "caption_files": " | ".join(c["filename"] for c in job.get("captions") or []),
+               "title": job.get("title"), "description": job.get("description"),
+               "url": src.get("url") or job.get("url"), "channel": src.get("channel"),
+               "upload_date": src.get("upload_date"), "duration_seconds": src.get("duration")}
+        # Captions may start with spreadsheet formulas. Export them as text.
+        writer.writerow({k: "'" + v if isinstance(v, str) and v.startswith(("=", "+", "-", "@", "\t", "\r"))
+                         else v for k, v in row.items()})
+    return "\ufeff" + output.getvalue()
+
+
 def delete_old_files(download_dir: str, max_age_seconds: float):
     """Files are only kept until the user saves them from the page. Delete
     finished files older than max_age_seconds (their jobs become "expired"),
@@ -337,14 +421,15 @@ def delete_old_files(download_dir: str, max_age_seconds: float):
     for job_id, job in list(JOBS.items()):
         if job["status"] == "done":
             if now - job.get("done_at", now) >= max_age_seconds:
-                try:
-                    os.remove(os.path.join(download_dir, job["filename"]))
-                except OSError:
-                    pass
+                for name in job_files(job):
+                    try:
+                        os.remove(os.path.join(download_dir, name))
+                    except OSError:
+                        pass
                 job["status"] = "expired"
                 job["error"] = "This file was deleted from the server. Download it again."
             else:
-                keep.add(job["filename"])
+                keep.update(job_files(job))
         elif job["status"] in ("queued", "downloading", "processing"):
             keep.add(job_id)  # its files start with the job id while in progress
 
