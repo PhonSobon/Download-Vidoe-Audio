@@ -205,8 +205,9 @@ function addVideo(url, fmt, limit, video = {}, playlist, captions = false) {
   const { title, index, duration, channel } = video;
   // YouTube thumbnails can be shown straight away, before the download starts.
   const thumbnail = video.thumbnail || (id.startsWith('yt:') ? `https://i.ytimg.com/vi/${id.slice(3)}/mqdefault.jpg` : null);
+  // video.telegram ({ chat, post_id }): a Telegram voice message, see telegram.js.
   const item = { key: nextKey++, url, videoId: id, fmt, limit, title, index, thumbnail, duration, channel,
-                 playlist, captions, status: 'starting', progress: 0 };
+                 playlist, captions, telegram: video.telegram, status: 'starting', progress: 0 };
   items.push(item);
   createRow(item);
   start(item);
@@ -345,10 +346,13 @@ function submitDownloads() {
 
 async function submitDownload(item) {
   try {
-    const res = await fetch('/generate', {
+    const [endpoint, body] = item.telegram
+      ? ['/telegram/download', item.telegram]
+      : ['/generate', { url: item.url, format: item.fmt, limit_minutes: item.limit, captions: !!item.captions }];
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: item.url, format: item.fmt, limit_minutes: item.limit, captions: !!item.captions })
+      body: JSON.stringify(body)
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Something went wrong.');
@@ -644,19 +648,21 @@ hfRepo.addEventListener('input', () => {
   renderHf();
 });
 
-// Finished MP3s not yet pushed to the dataset currently typed in.
+// Finished audio (MP3s and Telegram .ogg voice messages) not yet pushed to
+// the dataset currently typed in.
+const isAudio = i => i.status === 'done' && (i.fmt === 'mp3' || i.fmt === 'ogg');
 function hfCandidates() {
   const repo = hfRepo.value.trim();
-  return items.filter(i => i.status === 'done' && i.fmt === 'mp3' && i.hfRepo !== repo);
+  return items.filter(i => isAudio(i) && i.hfRepo !== repo);
 }
 
 function renderHf() {
   if (hfBusy) return;
   const n = hfCandidates().length;
-  const anyMp3 = items.some(i => i.status === 'done' && i.fmt === 'mp3');
+  const anyAudio = items.some(isAudio);
   hfPushBtn.disabled = !n || !hfRepo.value.trim();
-  hfPushBtn.textContent = n ? `Push ${n} MP3${n > 1 ? 's' : ''} to Hugging Face`
-    : anyMp3 ? 'All MP3s pushed to this dataset' : 'Push MP3s to Hugging Face';
+  hfPushBtn.textContent = n ? `Push ${n} audio file${n > 1 ? 's' : ''} to Hugging Face`
+    : anyAudio ? 'All audio pushed to this dataset' : 'Push audio to Hugging Face';
 }
 
 hfPushBtn.addEventListener('click', async () => {

@@ -67,6 +67,7 @@ body {
 .tiktok { background: #111 !important; }
 .facebook { background: #1877f2 !important; }
 .youtube { background: #ff0000 !important; }
+.telegram { background: #229ed9 !important; }
 .hf { background: linear-gradient(135deg, #f59e0b, #fbbf24) !important; }
 .sidebar-foot { margin-top: auto; font-size: 12px; color: var(--muted); padding: 0 8px; }
 
@@ -260,7 +261,7 @@ ul#queue { list-style: none; margin: 0; padding: 0; display: flex; flex-directio
 #collectorForm > .sub-label, label[for="collectionHistory"] { display: block; margin-top: 16px; }
 textarea { resize: vertical; font: inherit; color: var(--text); background: var(--surface-2);
   border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; width: 100%; }
-.collector-grid input, #collectorKeywords, #collectionHistory { width: 100%; min-width: 0; }
+.collector-grid input, #collectorKeywords, #collectionHistory, #tgLink { width: 100%; min-width: 0; }
 .collector-grid { margin-top: 12px; }
 .collector-status { font-size: 14px; margin-top: 12px; }
 .collector-errors { color: var(--err); font-size: 13px; overflow-wrap: anywhere; }
@@ -313,3 +314,18 @@ footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 2
   .item .meta { flex-basis: 0; }
   .item .right { width: 100%; justify-content: flex-end; }
 }
+
+/* Telegram voice download (telegram.js) */
+.tg-progress { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border); }
+.tg-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.tg-head strong { font-size: 15px; overflow-wrap: anywhere; }
+.tg-head span { font-size: 13px; color: var(--muted); }
+.tg-bar { height: 8px; border-radius: 99px; background: var(--surface-2); border: 1px solid var(--border); overflow: hidden; margin-top: 10px; }
+.tg-bar span { display: block; height: 100%; width: 0; background: #229ed9; transition: width .4s ease; }
+.tg-bar.done span { background: var(--ok); }
+.tg-stats { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 14px; }
+.tg-stats > div { flex: 1 1 140px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.tg-stats b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+.tg-stats span { font-size: 12px; color: var(--muted); }
+#tgFailedBox b { color: var(--err); }
+.tg-progress [hidden] { display: none !important; }

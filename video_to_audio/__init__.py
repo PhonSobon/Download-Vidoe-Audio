@@ -23,6 +23,13 @@ def create_app(overrides: dict | None = None) -> Flask:
     store.recover_interrupted()
     app.extensions["collections"] = store
 
+    from .telegram_bot import Bot, BotStore
+    host = app.config["HOST"] if app.config["HOST"] not in ("0.0.0.0", "::") else "127.0.0.1"
+    app.extensions["telegram_bot"] = Bot(BotStore(app.config["TELEGRAM_BOT_DB"]),
+                                         app.config["TELEGRAM_BOT_TOKEN"],
+                                         app.config.get("SITE_URL") or f"http://{host}:{app.config['PORT']}",
+                                         app.config["TELEGRAM_SAVE_DIR"])
+
     from .routes import bp
     app.register_blueprint(bp)
     return app

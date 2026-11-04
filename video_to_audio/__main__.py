@@ -6,6 +6,7 @@ from .downloader import start_cleanup
 def main():
     app = create_app()
     start_cleanup(app.config["DOWNLOAD_DIR"], app.config["FILE_LIFETIME_MINUTES"] * 60)
+    app.extensions["telegram_bot"].start()  # no-op until a bot token is saved
     host, port = app.config["HOST"], app.config["PORT"]
     print(f"Starting server at http://{host}:{port}")
     app.run(host=host, port=port, debug=False)

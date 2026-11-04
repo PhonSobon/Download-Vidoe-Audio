@@ -20,9 +20,13 @@ const VIEWS = {
     placeholder: 'https://www.youtube.com/watch?v=...  a Short, a playlist, or a channel’s /shorts page',
     hint: 'If YouTube asks you to sign in, upload cookies in the YouTube sign-in box below.',
   },
+  telegram: {
+    title: 'Telegram voice messages',
+    desc: 'Paste a public Telegram channel or group link and download all of its voice messages.',
+  },
   huggingface: {
     title: 'Push to Hugging Face',
-    desc: 'Upload your finished MP3s to a Hugging Face dataset.',
+    desc: 'Upload your finished MP3s and Telegram voice messages to a Hugging Face dataset.',
   },
 };
 

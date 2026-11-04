@@ -29,6 +29,10 @@
         <span class="nav-icon youtube"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.6 7.2a2.5 2.5 0 0 0-1.8-1.8C18.2 5 12 5 12 5s-6.2 0-7.8.4a2.5 2.5 0 0 0-1.8 1.8C2 8.8 2 12 2 12s0 3.2.4 4.8a2.5 2.5 0 0 0 1.8 1.8C5.8 19 12 19 12 19s6.2 0 7.8-.4a2.5 2.5 0 0 0 1.8-1.8c.4-1.6.4-4.8.4-4.8s0-3.2-.4-4.8zM10 15V9l5.2 3L10 15z"/></svg></span>
         YouTube
       </a>
+      <a class="nav-item" href="#telegram" data-view="telegram">
+        <span class="nav-icon telegram"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.4 4.1 2.9 11.3c-1.3.5-1.2 1.2-.2 1.5l4.7 1.5 1.8 5.6c.2.6.4.8.9.8.4 0 .6-.2.9-.4l2.3-2.2 4.7 3.5c.9.5 1.5.2 1.7-.8l3.1-14.5c.3-1.3-.5-1.8-1.4-1.4zM9.2 14.1l9.1-5.8c.4-.3.8-.1.5.2l-7.4 6.7-.3 3.4-1.9-4.5z"/></svg></span>
+        Telegram
+      </a>
       <div class="nav-label">Tools</div>
       <a class="nav-item" href="#huggingface" data-view="huggingface">
         <span class="nav-icon hf"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M5 20h14"/></svg></span>
@@ -97,6 +101,44 @@
     </div>
     <label class="sub-label" for="collectionHistory">Saved collections</label>
     <select id="collectionHistory"><option value="">No saved collections yet</option></select>
+  </section>
+
+  <section class="card" aria-labelledby="tgHeading" data-views="telegram">
+    <div class="hf-head">
+      <h2 id="tgHeading">Download Telegram voice messages</h2>
+      <p>Paste a public channel or group link. Every voice message in it is downloaded for you.</p>
+    </div>
+    <form id="tgForm" class="add-row">
+      <input id="tgLink" type="text" required spellcheck="false" autocomplete="off"
+        aria-label="Telegram channel or group link" placeholder="https://t.me/ScholarshipforCambodianStudents">
+      <button class="primary" id="tgGo" type="submit">Download voice messages</button>
+    </form>
+    <div id="tgError" class="collector-errors" role="alert"></div>
+
+    <div id="tgProgress" class="tg-progress" hidden>
+      <div class="tg-head">
+        <strong id="tgChat"></strong>
+        <span id="tgState" role="status" aria-live="polite"></span>
+      </div>
+      <div class="tg-bar" aria-hidden="true"><span id="tgBar"></span></div>
+      <div class="tg-stats">
+        <div><b id="tgSaved">0</b><span>voice messages downloaded</span></div>
+        <div><b id="tgChecked">0</b><span id="tgCheckedLabel">messages checked</span></div>
+        <div id="tgFailedBox" hidden><b id="tgFailed">0</b><span>failed (start again to retry)</span></div>
+      </div>
+      <div class="actions">
+        <a class="btn" id="tgZip" href="#" hidden>Download all (.zip)</a>
+        <button id="tgStop" type="button" hidden>Stop</button>
+      </div>
+      <p class="hint" id="tgFolder"></p>
+      <div class="collector-preview" id="tgRecent"></div>
+    </div>
+
+    <p class="hint">Only public channels and groups work (the link must show messages in a private browser
+      window). Big channels take a while: about 1 minute per 1,500 messages. Starting the same link again skips
+      voice messages already downloaded. Voice messages are people's voices: only collect them if you have
+      permission to use them.</p>
+    <p class="hint" id="tgBot"></p>
   </section>
 
   <section class="card" id="downloadSection" data-views="tiktok facebook youtube">
@@ -233,6 +275,7 @@
 
 <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 <script src="{{ url_for('static', filename='js/collector.js') }}"></script>
+<script src="{{ url_for('static', filename='js/telegram.js') }}"></script>
 <script src="{{ url_for('static', filename='js/sidebar.js') }}"></script>
 </body>
 </html>

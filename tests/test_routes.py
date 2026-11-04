@@ -95,7 +95,7 @@ def test_push_hf_validates_input(client, make_job):
     res = client.post("/push_hf", json={"repo_id": "bad", "ids": ["v1"]})
     assert "your-username/dataset-name" in res.get_json()["error"]
     res = client.post("/push_hf", json={"repo_id": "me/ds", "ids": ["v1"]})
-    assert res.get_json()["error"] == "No finished MP3s to push."
+    assert res.get_json()["error"] == "No finished MP3s or Telegram voice messages to push."
 
 
 def test_expand_passes_playlist_limit(client, monkeypatch):

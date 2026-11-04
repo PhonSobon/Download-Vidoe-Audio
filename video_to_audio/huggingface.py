@@ -103,7 +103,9 @@ def hf_file_name(job: dict) -> str:
     base = f"{(src.get('platform') or 'audio').lower()}-{src.get('id') or os.path.splitext(job['filename'])[0]}"
     if src.get("clip_minutes"):
         base += f"-first{src['clip_minutes']:g}min"
-    return (secure_filename(base) or "audio") + ".mp3"
+    # Keep the file's own type: .mp3, or .ogg for Telegram voice messages.
+    ext = os.path.splitext(job.get("filename") or "")[1].lower() or ".mp3"
+    return (secure_filename(base) or "audio") + ext
 
 
 def hf_row(job: dict) -> dict:

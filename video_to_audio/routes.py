@@ -5,7 +5,7 @@ import zipfile
 
 from flask import Blueprint, Response, current_app, jsonify, render_template, request, send_file, send_from_directory
 
-from . import collector, cookies, huggingface
+from . import collector, cookies, huggingface, telegram, telegram_bot
 from .downloader import (JOBS, expand_playlist, is_valid_url, job_files, metadata_csv, start_download,
                          title_to_filename)
 
@@ -124,6 +124,95 @@ def generate():
         return jsonify({"error": f"Unexpected server error: {e}"}), 500
 
 
+@bp.route("/telegram/scans", methods=["POST"])
+def telegram_scan():
+    """Start looking through a public Telegram chat for voice messages, e.g.
+    {"link": "https://t.me/name", "max_voices": 50, "max_posts": 2000}."""
+    try:
+        options = telegram.scan_options(request.get_json(silent=True) or {})
+    except telegram.TelegramError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(telegram.scan_status(telegram.start_scan(options))), 202
+
+
+@bp.route("/telegram/scans/<scan_id>")
+def telegram_scan_status(scan_id):
+    scan = telegram.scan_status(scan_id)
+    if not scan:
+        return jsonify({"error": "Unknown scan. The server may have restarted: scan again."}), 404
+    return jsonify(scan)
+
+
+@bp.route("/telegram/scans/<scan_id>/cancel", methods=["POST"])
+def telegram_scan_cancel(scan_id):
+    if not telegram.cancel_scan(scan_id):
+        return jsonify({"error": "Unknown scan"}), 404
+    return jsonify(telegram.scan_status(scan_id))
+
+
+@bp.route("/telegram/download", methods=["POST"])
+def telegram_download():
+    """Download one voice message as .ogg: {"chat": "name", "post_id": 123}.
+    Returns a job id that /statuses, /download and /download_zip understand."""
+    data = request.get_json(silent=True) or {}
+    chat, post_id = data.get("chat"), data.get("post_id")
+    if not isinstance(chat, str) or not telegram.NAME_RE.match(chat) \
+            or not isinstance(post_id, int) or isinstance(post_id, bool) or post_id < 1:
+        return jsonify({"error": "Send a Telegram chat name and message number."}), 400
+    job_id = uuid.uuid4().hex[:12]
+    telegram.start_voice_download(job_id, chat, post_id, current_app.config["DOWNLOAD_DIR"])
+    return jsonify({"job_id": job_id})
+
+
+def _bot() -> telegram_bot.Bot:
+    return current_app.extensions["telegram_bot"]
+
+
+@bp.route("/telegram/voice-downloads", methods=["POST"])
+def telegram_save_all():
+    """Download every voice message in a public chat into TELEGRAM_SAVE_DIR/<chat>/:
+    {"link": "https://t.me/name"}. Progress: GET /telegram/voice-downloads/latest."""
+    running = telegram.scan_status(telegram.LATEST["id"]) if telegram.LATEST["id"] else None
+    if telegram.is_active(running):
+        return jsonify({"error": f"Still downloading t.me/{running['chat']}. Stop it first."}), 409
+    try:
+        options = telegram.save_all_options(request.get_json(silent=True) or {})
+    except telegram.TelegramError as exc:
+        return jsonify({"error": str(exc)}), 400
+    scan_id = telegram.start_scan(options, current_app.config["TELEGRAM_SAVE_DIR"])
+    return jsonify({"scan": telegram.scan_status(scan_id), "bot": _bot().status()}), 202
+
+
+@bp.route("/telegram/voice-downloads/latest")
+def telegram_save_all_latest():
+    """The newest download (started on the page or by the bot) and the bot's state."""
+    scan = telegram.scan_status(telegram.LATEST["id"]) if telegram.LATEST["id"] else None
+    return jsonify({"scan": scan, "bot": _bot().status()})
+
+
+@bp.route("/telegram/voice-downloads/<scan_id>/zip")
+def telegram_save_all_zip(scan_id):
+    """Everything saved for that chat (this run and earlier ones) as one .zip."""
+    scan = telegram.SCANS.get(scan_id)
+    files = telegram.saved_files(scan["folder"]) if scan and scan.get("folder") else []
+    if not files:
+        return jsonify({"error": "No voice messages saved yet."}), 404
+    download_dir = current_app.config["DOWNLOAD_DIR"]
+    os.makedirs(download_dir, exist_ok=True)
+    zip_path = os.path.join(download_dir, f"batch-{uuid.uuid4().hex[:12]}.zip")
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as zf:  # .ogg is already compressed
+        for name in files:
+            zf.write(os.path.join(scan["folder"], name), arcname=name)
+    return send_file(zip_path, as_attachment=True, download_name=f"{scan['chat']}-voice-messages.zip")
+
+
+@bp.route("/telegram/bot/owner", methods=["DELETE"])
+def telegram_bot_reset_owner():
+    """Forget who owns the bot: the next person to message it becomes the owner."""
+    _bot().store.put("owner", None)
+    return jsonify(_bot().status())
+
+
 @bp.route("/expand", methods=["POST"])
 def expand():
     """Turn a playlist link into the list of video links inside it, so the
@@ -236,9 +325,9 @@ def push_hf():
     if not huggingface.is_valid_repo_id(repo_id):
         return jsonify({"error": "Dataset name must look like your-username/dataset-name."}), 400
     jobs = [JOBS[i] for i in data.get("ids") or []
-            if JOBS.get(i, {}).get("status") == "done" and JOBS[i].get("format") == "mp3"]
+            if JOBS.get(i, {}).get("status") == "done" and JOBS[i].get("format") in ("mp3", "ogg")]
     if not jobs:
-        return jsonify({"error": "No finished MP3s to push."}), 400
+        return jsonify({"error": "No finished MP3s or Telegram voice messages to push."}), 400
 
     try:
         parquet_path = huggingface.push_to_hub(
@@ -276,8 +365,9 @@ def download_zip():
             for name in job_files(job):
                 zf.write(os.path.join(download_dir, name), arcname=name)
         # With captions asked for, add each post's caption text and the
-        # names of its timed caption files.
-        if any(job.get("want_captions") for job in jobs):
+        # names of its timed caption files. Telegram voice messages always
+        # get one (who sent each message, when, and its text).
+        if any(job.get("want_captions") or job.get("want_metadata") for job in jobs):
             zf.writestr("metadata.csv", metadata_csv(jobs).encode("utf-8"))
 
     # The page passes the playlist title as "name" when all the files came

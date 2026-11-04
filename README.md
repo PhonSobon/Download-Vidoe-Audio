@@ -127,6 +127,32 @@ queue still follow the existing temporary/session behavior: save completed
 MP3s or ZIPs before they expire or you restart the server. A fixed worker
 pool handles imported batches without creating one thread per link.
 
+### Download all voice messages from a Telegram channel
+
+Open **Telegram** in the sidebar, paste a public channel or group link such as
+`https://t.me/ScholarshipforCambodianStudents`, and click **Download voice
+messages**. The app looks through every message, newest first, and saves each
+voice message as it finds it, into
+`downloads/telegram/<channel>/<channel>-<message>.ogg` in this folder, with a
+`metadata.csv` (who sent it, when, its text and link). **Download all (.zip)**
+gives you everything saved so far. Nothing in that folder is deleted
+automatically.
+
+Only public chats work (the link must show messages in a private browser
+window). A channel takes about 1 minute per 1,500 messages, so one with 100,000
+messages takes over an hour; **Stop** keeps what's saved, and starting the same
+link again skips the voice messages already downloaded. Paste a message link
+(`https://t.me/name/45125`) to start from that message instead of the newest.
+
+**From Telegram, with a bot (optional).** Put the token from
+[@BotFather](https://t.me/BotFather) in `.env` (`TELEGRAM_BOT_TOKEN=...`;
+`Telegram_bot=...` works too) and start the app. Open your bot in Telegram,
+press **Start**, and send it the channel link: it starts the same download, the
+website shows the progress, and the bot messages you when it's done. The first
+person to message the bot becomes its owner and it ignores everyone else
+(reset with `DELETE /telegram/bot/owner`). Only one program can read a bot's
+messages at a time, so don't use the same bot elsewhere.
+
 ### Settings
 
 Each setting in [video_to_audio/config.py](video_to_audio/config.py) can be
@@ -142,6 +168,9 @@ app:
 | `HOST` / `PORT` | `127.0.0.1` / `5000` | Address the server listens on |
 | `HF_TOKEN` | not set | Hugging Face token used when the HF_TOKEN box is left blank |
 | `COOKIES_FILE` | `cookies.txt` in this folder | Where the YouTube cookies uploaded on the page are kept |
+| `TELEGRAM_SAVE_DIR` | `downloads/telegram` in this project | Where Telegram voice messages are saved |
+| `TELEGRAM_BOT_TOKEN` | not set | Token of your Telegram bot (can be in `.env`) |
+| `TELEGRAM_BOT_DB` | `data/telegram_bot.sqlite3` in this project | The bot's owner and progress |
 | `COOKIES_FROM_BROWSER` | not set | Browser to read YouTube cookies from while there's no `cookies.txt` (Firefox only on Windows), e.g. `firefox` |
 
 For example, on Windows PowerShell: `$env:PORT = "8080"; python run.py`

@@ -387,7 +387,7 @@ def job_files(job: dict) -> list[str]:
     return [job["filename"], *(c["filename"] for c in job.get("captions") or [])]
 
 
-METADATA_FIELDS = ["file", "caption_files", "title", "description", "url", "channel",
+METADATA_FIELDS = ["file", "caption_files", "title", "description", "url", "channel", "speaker",
                    "upload_date", "duration_seconds"]
 
 
@@ -403,6 +403,8 @@ def metadata_csv(jobs: list[dict]) -> str:
                "caption_files": " | ".join(c["filename"] for c in job.get("captions") or []),
                "title": job.get("title"), "description": job.get("description"),
                "url": src.get("url") or job.get("url"), "channel": src.get("channel"),
+               # Who sent a Telegram voice message (empty for other sites).
+               "speaker": job.get("speaker"),
                "upload_date": src.get("upload_date"), "duration_seconds": src.get("duration")}
         # Captions may start with spreadsheet formulas. Export them as text.
         writer.writerow({k: "'" + v if isinstance(v, str) and v.startswith(("=", "+", "-", "@", "\t", "\r"))
