@@ -313,3 +313,4 @@ footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 2
   .item .meta { flex-basis: 0; }
   .item .right { width: 100%; justify-content: flex-end; }
 }
+#customLimit { margin-top: 8px; }

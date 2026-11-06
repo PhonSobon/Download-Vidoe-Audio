@@ -170,3 +170,29 @@ def test_facebook_page_links_get_a_clear_error():
         check_facebook_page(url)
     with pytest.raises(ValueError, match="Import links"):
         expand_playlist("https://www.facebook.com/www.mptc.gov.kh/reels/")
+
+
+def test_channel_links_read_the_videos_tab():
+    from video_to_audio.downloader import channel_tab_url
+    assert channel_tab_url("https://www.youtube.com/@kimsunofficial02") == \
+        "https://www.youtube.com/@kimsunofficial02/videos"
+    assert channel_tab_url("https://youtube.com/@kimsunofficial02/featured") == \
+        "https://www.youtube.com/@kimsunofficial02/videos"
+    assert channel_tab_url("https://www.youtube.com/@kimsunofficial02/videos") == \
+        "https://www.youtube.com/@kimsunofficial02/videos"
+    assert channel_tab_url("https://m.youtube.com/channel/UC123/shorts/") == \
+        "https://www.youtube.com/channel/UC123/shorts"
+    # Single videos and playlists are left alone.
+    for url in ("https://www.youtube.com/watch?v=abc", "https://www.youtube.com/shorts/abc",
+                "https://www.youtube.com/playlist?list=PLx"):
+        assert channel_tab_url(url) == url
+
+
+def test_generate_reuses_the_job_for_a_duplicate_video(client, monkeypatch):
+    from video_to_audio import downloader
+    monkeypatch.setattr(downloader, "DOWNLOAD_WORKERS_STARTED", True)  # keep jobs queued
+    monkeypatch.setattr(downloader, "DOWNLOAD_QUEUE", __import__("queue").Queue())
+    first = client.post("/generate", json={"url": "https://www.youtube.com/watch?v=xyz", "format": "mp3"}).get_json()
+    again = client.post("/generate", json={"url": "https://youtu.be/xyz", "format": "mp3"}).get_json()
+    assert first["duplicate"] is False
+    assert again == {"job_id": first["job_id"], "duplicate": True}

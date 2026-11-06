@@ -103,7 +103,7 @@
     <label class="field" for="urlInput">Paste a link, then press Enter</label>
     <div class="add-row">
       <input type="text" id="urlInput" spellcheck="false" autocomplete="off"
-        placeholder="https://www.youtube.com/watch?v=...  a Short, a playlist, or a channel's /shorts page">
+        placeholder="https://www.youtube.com/watch?v=...  a Short, a playlist, or a channel (youtube.com/@name/videos)">
       <button id="addBtn">Add</button>
     </div>
     <div class="actions">
@@ -133,15 +133,20 @@
         <input type="number" id="limitMinutes" min="0" step="0.5" placeholder="Full length">
       </div>
       <div data-views="tiktok youtube">
-        <label class="sub-label" for="playlistLimit">From each playlist or TikTok profile</label>
+        <label class="sub-label" for="playlistLimit">From each playlist, channel or TikTok profile</label>
         <select id="playlistLimit">
-          <option value="5">First 5 videos</option>
           <option value="10">First 10 videos</option>
           <option value="20" selected>First 20 videos</option>
+          <option value="30">First 30 videos</option>
           <option value="50">First 50 videos</option>
           <option value="100">First 100 videos</option>
+          <option value="200">First 200 videos</option>
+          <option value="500">First 500 videos</option>
+          <option value="1000">First 1000 videos</option>
           <option value="">All videos</option>
+          <option value="custom">Custom number…</option>
         </select>
+        <input type="number" id="customLimit" min="1" step="1" placeholder="e.g. 300" aria-label="Number of videos" hidden>
       </div>
     </div>
     <label class="check"><input type="checkbox" id="wantCaptions"> Also save captions: timed subtitles as .vtt, plus each post's caption text in metadata.csv inside the .zip</label>

@@ -115,10 +115,11 @@ def generate():
             except (TypeError, ValueError):
                 return jsonify({"error": "Time limit must be a number of minutes."}), 400
 
-        job_id = uuid.uuid4().hex[:12]
-        start_download(job_id, url, fmt, limit_minutes, current_app.config["DOWNLOAD_DIR"],
-                       captions=data.get("captions") is True)
-        return jsonify({"job_id": job_id})
+        new_id = uuid.uuid4().hex[:12]
+        # The same video already queued or downloaded reuses that job.
+        job_id = start_download(new_id, url, fmt, limit_minutes, current_app.config["DOWNLOAD_DIR"],
+                                captions=data.get("captions") is True)
+        return jsonify({"job_id": job_id, "duplicate": job_id != new_id})
     except Exception as e:
         # Catch-all so the browser always gets JSON, never an HTML crash page
         return jsonify({"error": f"Unexpected server error: {e}"}), 500

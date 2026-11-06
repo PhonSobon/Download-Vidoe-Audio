@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from queue import Queue
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 import yt_dlp
 from yt_dlp.utils import download_range_func
@@ -160,10 +160,74 @@ CAPTION_OPTS = {
 CAPTION_CONVERTER = {"key": "FFmpegSubtitlesConvertor", "format": "vtt", "when": "before_dl"}
 
 
+def video_key(url: str) -> str:
+    """The same video whatever form its link takes, so it isn't downloaded
+    twice: watch?v=ID, youtu.be/ID, shorts/ID (with or without &t=, &list=...),
+    TikTok video/photo posts and Facebook reels. Other links are compared
+    without their #fragment. Mirrors videoId() in static/js/app.js."""
+    try:
+        parts = urlsplit(url.strip())
+        host = re.sub(r"^(www|m|music|web)\.", "", (parts.hostname or "").lower())
+    except ValueError:
+        return url.strip()
+    query = parse_qs(parts.query)
+    if host == "youtu.be":
+        return "yt:" + parts.path.lstrip("/").split("/")[0]
+    if host == "youtube.com":
+        if query.get("v"):
+            return "yt:" + query["v"][0]
+        match = re.match(r"/(shorts|live|embed)/([^/]+)", parts.path)
+        if match:
+            return "yt:" + match[2]
+    if host == "tiktok.com":
+        match = re.fullmatch(r"/@[^/]+/(?:video|photo)/(\d+)/?", parts.path)
+        if match:
+            return "tiktok:" + match[1]
+    if host == "facebook.com" or host.endswith(".facebook.com"):
+        match = re.fullmatch(r"/reel/(\d+)/?", parts.path)
+        if match:
+            return "fb:" + match[1]
+        if parts.path.rstrip("/") == "/watch" and query.get("v"):
+            return "fb:" + query["v"][0]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, ""))
+
+
+# Held while checking for a duplicate and registering the new job, so two
+# requests for the same video at the same moment can't both start one.
+DUPLICATE_LOCK = threading.Lock()
+ACTIVE_STATUSES = ("queued", "downloading", "processing")
+
+
+def find_duplicate(url: str, fmt: str, limit_minutes: float | None, download_dir: str,
+                   captions: bool = False) -> str | None:
+    """The id of a job already downloading or holding this same video in the
+    same format, clip length and captions setting, or None. A finished job
+    only counts while its file is still on the server."""
+    key = video_key(url)
+    for job_id, job in list(JOBS.items()):
+        if (job.get("key") != key or job.get("fmt") != fmt or job.get("limit_minutes") != limit_minutes
+                or bool(job.get("want_captions")) != bool(captions)):
+            continue
+        if job["status"] in ACTIVE_STATUSES:
+            return job_id
+        if job["status"] == "done" and all(
+                os.path.exists(os.path.join(download_dir, name)) for name in job_files(job)):
+            return job_id
+    return None
+
+
 def start_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, download_dir: str,
-                   captions: bool = False):
-    JOBS[job_id] = {"status": "queued", "filename": None, "error": None,
-                    "progress": 0, "title": None, "url": url, "want_captions": captions}
+                   captions: bool = False) -> str:
+    """Queue a download and return its job id. If the same video is already
+    queued, downloading or downloaded (same format, clip and captions), no new
+    download starts and that job's id is returned instead."""
+    with DUPLICATE_LOCK:
+        existing = find_duplicate(url, fmt, limit_minutes, download_dir, captions)
+        if existing:
+            return existing
+        JOBS[job_id] = {"status": "queued", "filename": None, "error": None,
+                        "progress": 0, "title": None, "url": url, "want_captions": captions,
+                        "key": video_key(url), "fmt": fmt, "limit_minutes": limit_minutes}
     # A large CSV uses a fixed number of workers rather than a thread per URL.
     global DOWNLOAD_WORKERS_STARTED
     with DOWNLOAD_WORKERS_LOCK:
@@ -173,6 +237,7 @@ def start_download(job_id: str, url: str, fmt: str, limit_minutes: float | None,
                                  name=f"audio-download-{index}").start()
             DOWNLOAD_WORKERS_STARTED = True
     DOWNLOAD_QUEUE.put((job_id, url, fmt, limit_minutes, download_dir, captions))
+    return job_id
 
 
 def _download_worker(queue):
@@ -460,6 +525,22 @@ def start_cleanup(download_dir: str, max_age_seconds: float, every_seconds: floa
     threading.Thread(target=loop, daemon=True).start()
 
 
+# youtube.com/@name, /channel/ID, /c/name, /user/name, optionally with a tab.
+YOUTUBE_CHANNEL_PATH = re.compile(r"/(@[^/]+|(?:channel|c|user)/[^/]+)(?:/(videos|shorts|streams|featured))?/?")
+
+
+def channel_tab_url(url: str) -> str:
+    """A bare YouTube channel link (or its Home tab) lists the channel's tabs,
+    not its videos, so read its Videos tab instead. Other links are unchanged."""
+    parts = urlsplit(url)
+    host = (parts.hostname or "").removeprefix("www.").removeprefix("m.")
+    match = YOUTUBE_CHANNEL_PATH.fullmatch(parts.path) if host == "youtube.com" else None
+    if not match:
+        return url
+    tab = match[2] if match[2] and match[2] != "featured" else "videos"
+    return f"https://www.youtube.com/{match[1]}/{tab}"
+
+
 def expand_playlist(url: str, limit: int | None = None, start: int = 1) -> dict:
     """Turn a playlist link into {"title", "channel", "total", "videos": [{"url",
     "title", "index", "thumbnail", "duration", "channel"}],
@@ -469,6 +550,7 @@ def expand_playlist(url: str, limit: int | None = None, start: int = 1) -> dict:
     many the whole playlist has (None if unknown). A plain video link comes back
     as a one-item list. Raises on failure."""
     check_facebook_page(url)
+    url = channel_tab_url(url)
     ydl_opts = dict(COMMON_OPTS)
     ydl_opts.update({
         "noplaylist": False,

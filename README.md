@@ -66,9 +66,15 @@ it is added to the queue. Deleted/private videos are skipped. YouTube "Mix"
 links (`list=RD...`) are endless auto-playlists, so only that one video is
 downloaded.
 
-**Long playlists:** "From each playlist" sets how many videos to take
-from each playlist link: the first 5, 10, 20 (default), 50, 100, or all.
-The page tells you when a playlist had more videos than it added.
+**Whole channel:** paste a channel link, e.g.
+`youtube.com/@kimsunofficial02/videos` (also `/shorts`, `/streams`, or just
+`youtube.com/@name`, which reads its Videos tab). Its videos are added to the
+queue newest first, like a playlist.
+
+**Long playlists and channels:** "From each playlist, channel or TikTok
+profile" sets how many videos to take from each link: the first 10, 20
+(default), 30, 50, 100, 200, 500, 1000, all, or a custom number. Afterwards
+the queue offers buttons to add +10, +50, +100, +500 more, or all the rest.
 
 Up to 3 links download at once; the rest wait their turn.
 

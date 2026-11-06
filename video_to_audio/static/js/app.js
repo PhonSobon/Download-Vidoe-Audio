@@ -47,7 +47,8 @@ function renderPending() {
     if (isPlaylist(url)) {
       const tag = document.createElement('span');
       tag.className = 'tag';
-      tag.textContent = isTikTokProfile(url) ? 'PROFILE' : isShortsTab(url) ? 'SHORTS' : 'PLAYLIST';
+      tag.textContent = isTikTokProfile(url) ? 'PROFILE' : isChannelTab(url)
+        ? (channelTabUrl(url).endsWith('/shorts') ? 'SHORTS' : 'CHANNEL') : 'PLAYLIST';
       li.append(tag);
     }
     const remove = document.createElement('button');
@@ -104,9 +105,10 @@ $('clearPending').addEventListener('click', () => { pending.length = 0; renderPe
 // Playlist links: youtube.com/playlist?list=... or a video opened from a
 // playlist (watch?v=...&list=...). "RD..." lists are YouTube's endless
 // auto-generated Mixes, so those are treated as the single video.
-// A channel's Shorts tab (youtube.com/@name/shorts) is read like a playlist too.
+// A channel page (youtube.com/@name, /@name/videos, /shorts, /streams) is read
+// like a playlist too.
 function isPlaylist(url) {
-  if (isShortsTab(url) || isTikTokProfile(url)) return true;
+  if (isChannelTab(url) || isTikTokProfile(url)) return true;
   try {
     const u = new URL(url);
     const list = u.searchParams.get('list');
@@ -122,14 +124,25 @@ function isTikTokProfile(url) {
   } catch { return false; }
 }
 
-// youtube.com/@name/shorts, /channel/ID/shorts, /c/name/shorts, /user/name/shorts.
-// A single Short (youtube.com/shorts/ID) is a plain video, not this.
-function isShortsTab(url) {
+// A YouTube channel or one of its video tabs: youtube.com/@name,
+// /@name/videos, /@name/shorts, /@name/streams (also /channel/ID, /c/name,
+// /user/name). A single Short (youtube.com/shorts/ID) is a plain video, not this.
+const CHANNEL_PATH = /^\/(@[^/]+|(?:channel|c|user)\/[^/]+)(?:\/(videos|shorts|streams|featured))?\/?$/;
+function channelMatch(url) {
   try {
     const u = new URL(url);
-    return u.hostname.replace(/^(www|m)\./, '') === 'youtube.com'
-      && /^\/(@[^/]+|(channel|c|user)\/[^/]+)\/shorts\/?$/.test(u.pathname);
-  } catch { return false; }
+    if (u.hostname.replace(/^(www|m)\./, '') !== 'youtube.com') return null;
+    return u.pathname.match(CHANNEL_PATH);
+  } catch { return null; }
+}
+function isChannelTab(url) { return !!channelMatch(url); }
+
+// The tab to read: a bare channel link (or its Home tab) means its Videos tab.
+function channelTabUrl(url) {
+  const m = channelMatch(url);
+  if (!m) return url;
+  const tab = m[2] && m[2] !== 'featured' ? m[2] : 'videos';
+  return `https://www.youtube.com/${m[1]}/${tab}`;
 }
 
 // How many videos to take from each playlist ('' = all), remembered between visits.
@@ -138,9 +151,28 @@ try {
   const saved = localStorage.getItem('playlistLimit');
   if (saved !== null && [...playlistLimit.options].some(o => o.value === saved)) playlistLimit.value = saved;
 } catch {}
+const customLimit = $('customLimit');
+try {
+  const savedCustom = localStorage.getItem('customLimit');
+  if (savedCustom) customLimit.value = savedCustom;
+} catch {}
+function showCustomLimit() { customLimit.hidden = playlistLimit.value !== 'custom'; }
+showCustomLimit();
 playlistLimit.addEventListener('change', () => {
   try { localStorage.setItem('playlistLimit', playlistLimit.value); } catch {}
+  showCustomLimit();
+  if (!customLimit.hidden) customLimit.focus();
 });
+customLimit.addEventListener('change', () => {
+  try { localStorage.setItem('customLimit', customLimit.value); } catch {}
+});
+
+// How many videos to take from each playlist/channel: a number, or null for all.
+function maxVideosPerList() {
+  if (playlistLimit.value !== 'custom') return playlistLimit.value || null;
+  const n = parseInt(customLimit.value, 10);
+  return n > 0 ? n : undefined;
+}
 const wantCaptions = $('wantCaptions');
 try { wantCaptions.checked = localStorage.getItem('wantCaptions') === '1'; } catch {}
 wantCaptions.addEventListener('change', () => {
@@ -158,11 +190,16 @@ goBtn.addEventListener('click', () => {
   }
   const fmt = selectedFormat();
   const limit = limitInput.value.trim() || null;
-  const maxVideos = playlistLimit.value || null;
+  const maxVideos = maxVideosPerList();
+  if (maxVideos === undefined && pending.some(isPlaylist)) {
+    formError.textContent = 'Enter how many videos to take from each playlist or channel (1 or more).';
+    customLimit.focus();
+    return;
+  }
   const captions = wantCaptions.checked;
   let skipped = 0;
   for (const url of pending) {
-    if (isPlaylist(url)) addPlaylist(url, fmt, limit, maxVideos, captions);
+    if (isPlaylist(url)) addPlaylist(channelTabUrl(url), fmt, limit, maxVideos, captions);
     else if (!addVideo(url, fmt, limit, {}, undefined, captions)) skipped++;
   }
   noteSkipped(skipped);
@@ -187,6 +224,11 @@ function videoId(url) {
     if (host === 'tiktok.com') {
       const m = u.pathname.match(/^\/@[^/]+\/(video|photo)\/(\d+)\/?$/);
       if (m) return 'tiktok:' + m[2];
+    }
+    if (host === 'facebook.com' || host.endsWith('.facebook.com')) {
+      const m = u.pathname.match(/^\/reel\/(\d+)\/?$/);
+      if (m) return 'fb:' + m[1];
+      if (u.pathname.replace(/\/$/, '') === '/watch' && u.searchParams.get('v')) return 'fb:' + u.searchParams.get('v');
     }
     u.hash = '';
     return u.href;
@@ -298,7 +340,7 @@ function renderMore() {
 
     const btns = document.createElement('div');
     btns.className = 'more-btns';
-    const sizes = [10, 20, 50].filter(n => left === null || n < left);
+    const sizes = [10, 50, 100, 500].filter(n => left === null || n < left);
     for (const n of sizes) btns.append(moreButton(pl, `+${n} more`, n));
     btns.append(moreButton(pl, left ? `All ${left} left` : 'All the rest', null));
     const close = document.createElement('button');
@@ -354,6 +396,9 @@ async function submitDownload(item) {
     if (!res.ok) throw new Error(data.error || 'Something went wrong.');
     if (!items.includes(item)) return;
     item.jobId = data.job_id;
+    // The server already had this video (e.g. from before a page refresh):
+    // the row follows that download instead of fetching the file again.
+    if (data.duplicate) formNote.textContent = 'Some videos were already downloaded, so their existing files are reused.';
     item.status = 'queued';
     updateRow(item);
     if (!downloadPollTimer && !downloadPollInFlight) downloadPollTimer = setTimeout(pollDownloads, 300);
