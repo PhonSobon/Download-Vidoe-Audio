@@ -23,8 +23,7 @@ def download_dir(tmp_path):
 
 @pytest.fixture
 def client(download_dir):
-    app = create_app({"TESTING": True, "DOWNLOAD_DIR": download_dir,
-                      "COLLECTION_DB": os.path.join(os.path.dirname(download_dir), "collections.sqlite3")})
+    app = create_app({"TESTING": True, "DOWNLOAD_DIR": download_dir})
     yield app.test_client()
     JOBS.clear()
 

@@ -58,35 +58,6 @@ def check_facebook_page(url: str):
                          "put the reel links in a .txt file (one per line) and use Import links.")
 
 
-def prepare_download_url(url: str, fmt: str) -> str:
-    """Let yt-dlp extract a TikTok photo post's sound through its video URL."""
-    check_facebook_page(url)
-    parts = urlsplit(url)
-    if parts.hostname not in {"tiktok.com", "www.tiktok.com", "m.tiktok.com"}:
-        return url
-    if not re.fullmatch(r"/@[\w.-]+/photo/\d+/?", parts.path):
-        return url
-    if fmt != "mp3":
-        raise ValueError("This TikTok link is a photo/slideshow post. Choose MP3 audio "
-                         "to download its sound. Exporting the photos as an MP4 slideshow "
-                         "isn't supported.")
-    return urlunsplit((parts.scheme, "www.tiktok.com", parts.path.replace("/photo/", "/video/", 1),
-                       parts.query, parts.fragment))
-
-
-def audio_format(url: str) -> str:
-    """yt-dlp format selector for MP3 downloads.
-
-    TikTok lists the post's background music as a separate "audio" format. For a
-    video post that is often only the song (and can be shorter than the video),
-    so take the audio from the video itself. Photo posts only have that music.
-    """
-    host = urlsplit(url).hostname or ""
-    if (host == "tiktok.com" or host.endswith(".tiktok.com")) and "/photo/" not in url:
-        return "bestaudio[format_id!=audio]/best[format_id!=audio]/best"
-    return "bestaudio/best"
-
-
 # Characters Windows doesn't allow in file names, plus control characters.
 # Everything else is kept, so Khmer, Thai, Chinese, etc. titles stay readable
 # (werkzeug's secure_filename would strip them down to nothing).
@@ -147,8 +118,8 @@ if FFMPEG_PATH:
 
 
 # Timed captions (subtitles) saved next to the audio/video when asked for.
-# TikTok serves them as WebVTT or SRT (SRT is converted to VTT); "all" keeps
-# every language the post has, e.g. the original plus TikTok's translations.
+# Sites serve them as WebVTT or SRT (SRT is converted to VTT); "all" keeps
+# every language the video has, e.g. the original plus auto-translations.
 # YouTube's auto-generated captions are left out: they come in 100+
 # machine-translated languages.
 CAPTION_EXTS = (".vtt", ".srt", ".json")
@@ -163,7 +134,8 @@ CAPTION_CONVERTER = {"key": "FFmpegSubtitlesConvertor", "format": "vtt", "when":
 def video_key(url: str) -> str:
     """The same video whatever form its link takes, so it isn't downloaded
     twice: watch?v=ID, youtu.be/ID, shorts/ID (with or without &t=, &list=...),
-    TikTok video/photo posts and Facebook reels. Other links are compared
+    Facebook reels, Pinterest pins, TikTok, Instagram, X/Twitter and Vimeo
+    posts. Other links are compared
     without their #fragment. Mirrors videoId() in static/js/app.js."""
     try:
         parts = urlsplit(url.strip())
@@ -179,16 +151,32 @@ def video_key(url: str) -> str:
         match = re.match(r"/(shorts|live|embed)/([^/]+)", parts.path)
         if match:
             return "yt:" + match[2]
-    if host == "tiktok.com":
-        match = re.fullmatch(r"/@[^/]+/(?:video|photo)/(\d+)/?", parts.path)
-        if match:
-            return "tiktok:" + match[1]
     if host == "facebook.com" or host.endswith(".facebook.com"):
         match = re.fullmatch(r"/reel/(\d+)/?", parts.path)
         if match:
             return "fb:" + match[1]
         if parts.path.rstrip("/") == "/watch" and query.get("v"):
             return "fb:" + query["v"][0]
+    if host == "pinterest.com" or host.endswith(".pinterest.com"):
+        match = re.fullmatch(r"/pin/(?:[\w-]+--)?(\d+)/?", parts.path)
+        if match:
+            return "pin:" + match[1]
+    if host == "tiktok.com" or host.endswith(".tiktok.com"):
+        match = re.fullmatch(r"/@[^/]+/(?:video|photo)/(\d+)/?", parts.path)
+        if match:
+            return "tt:" + match[1]
+    if host in ("instagram.com", "ddinstagram.com"):
+        match = re.fullmatch(r"/(?:[\w.]+/)?(?:p|reels?|tv)/([\w-]+)/?", parts.path)
+        if match:
+            return "ig:" + match[1]
+    if host in ("x.com", "twitter.com", "mobile.twitter.com"):
+        match = re.fullmatch(r"/[^/]+/status/(\d+)(?:/.*)?", parts.path)
+        if match:
+            return "x:" + match[1]
+    if host == "vimeo.com":
+        match = re.fullmatch(r"/(\d+)/?", parts.path)
+        if match:
+            return "vimeo:" + match[1]
     return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, ""))
 
 
@@ -321,14 +309,20 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
     outtmpl = os.path.join(download_dir, f"{unique_name}.%(ext)s")
 
     try:
-        extract_url = prepare_download_url(url, fmt)
+        check_facebook_page(url)
         ydl_opts = dict(COMMON_OPTS)
         ydl_opts["outtmpl"] = outtmpl
+        # A board, profile or album link that reaches here would otherwise
+        # save every entry under this one job's file name. The page expands
+        # such links first; this only keeps a stray one to a single file.
+        ydl_opts["playlist_items"] = "1"
         ydl_opts["progress_hooks"] = [_make_progress_hook(job_id)]
 
         if fmt == "mp3":
             ydl_opts.update({
-                "format": audio_format(url),
+                # Audio-only stream if the site has one, else the best file
+                # with sound (ffmpeg pulls the audio out of it).
+                "format": "bestaudio/best*[acodec!=none]/best",
                 "postprocessors": [
                     {
                         "key": "FFmpegExtractAudio",
@@ -339,7 +333,10 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
             })
         else:  # mp4
             ydl_opts.update({
-                "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                # Many sites (Facebook, Pinterest, Instagram, Vimeo...) serve
+                # video and sound as separate streams, often not MP4/M4A, so
+                # fall back to any video+audio pair before a single file.
+                "format": "bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b[ext=mp4]/b",
                 "merge_output_format": "mp4",
             })
 
@@ -352,7 +349,7 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
 
         def fetch(opts):
             with cookies.ydl_options() as cookie_opts, yt_dlp.YoutubeDL({**opts, **cookie_opts}) as ydl:
-                return ydl.extract_info(extract_url, download=True)
+                return ydl.extract_info(url, download=True)
 
         if captions:
             with_captions = {**ydl_opts, **CAPTION_OPTS,
@@ -374,7 +371,7 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
         # the original video/page (see huggingface.hf_row).
         JOBS[job_id]["source"] = {
             "id": info.get("id"),
-            "url": url if extract_url != url else info.get("webpage_url") or url,
+            "url": info.get("webpage_url") or url,
             "platform": info.get("extractor_key") or info.get("extractor"),
             "channel": info.get("channel") or info.get("uploader"),
             "channel_url": info.get("channel_url") or info.get("uploader_url"),
@@ -382,7 +379,7 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
             "duration": info.get("duration"),
             "clip_minutes": limit_minutes,
         }
-        # The post's own text (on TikTok, the caption the creator wrote).
+        # The video's own text (its description or post caption).
         JOBS[job_id]["description"] = info.get("description") or info.get("title")
 
         # Find the actual produced file (extension is set by postprocessor/merge)
@@ -423,6 +420,12 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
             msg += " (This link may be private, age-restricted, or require login -- those can't be downloaded.)"
         elif "403" in msg or "forbidden" in low:
             msg += " (Try running 'pip install -U yt-dlp' to update to the latest version, then retry.)"
+        elif "unsupported url" in low:
+            msg = ("This site or link type isn't supported. Paste the link of a single video "
+                   "post (not a profile, search or home page).")
+        elif "no video formats" in low or "no video could be found" in low:
+            msg = ("No video was found at this link. It may be an image-only post (common on "
+                   "Pinterest and Instagram), or private.")
         elif "audio codec" in low:
             # yt-dlp's way of saying the video has no audio track at all.
             msg = "This video has no sound, so there's no audio to save as MP3. Choose MP4 to get the video."
@@ -585,7 +588,7 @@ def expand_playlist(url: str, limit: int | None = None, start: int = 1) -> dict:
         if title in ("[Deleted video]", "[Private video]"):
             continue
         video_url = entry.get("url") or entry.get("webpage_url")
-        if not video_url and entry.get("id"):
+        if not video_url and entry.get("id") and (entry.get("ie_key") or "").startswith("Youtube"):
             video_url = f"https://www.youtube.com/watch?v={entry['id']}"
         if video_url:
             # index: position in the playlist, shown next to the video like YouTube does.

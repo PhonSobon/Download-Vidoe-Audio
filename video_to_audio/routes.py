@@ -3,9 +3,9 @@ import os
 import uuid
 import zipfile
 
-from flask import Blueprint, Response, current_app, jsonify, render_template, request, send_file, send_from_directory
+from flask import Blueprint, current_app, jsonify, render_template, request, send_file, send_from_directory
 
-from . import collector, cookies, huggingface
+from . import cookies, huggingface, links
 from .downloader import (JOBS, expand_playlist, is_valid_url, job_files, metadata_csv, start_download,
                          title_to_filename)
 
@@ -30,65 +30,14 @@ def index():
     return render_template("index.html")
 
 
-@bp.route("/collections", methods=["GET", "POST"])
-def collections():
-    store = current_app.extensions["collections"]
-    if request.method == "GET":
-        return jsonify(store.recent())
-    try:
-        options = collector.collection_options(request.get_json(silent=True) or {})
-        collection_id = collector.start_collection(store, options)
-    except collector.CollectionError as exc:
-        return jsonify({"error": str(exc)}), 400
-    return jsonify(store.get(collection_id)), 202
-
-
-@bp.route("/collections/<collection_id>")
-def collection_status(collection_id):
-    store = current_app.extensions["collections"]
-    result = store.get(collection_id)
-    if not result:
-        return jsonify({"error": "Unknown collection"}), 404
-    result["preview"] = store.posts(collection_id, limit=10)
-    return jsonify(result)
-
-
-@bp.route("/collections/<collection_id>/cancel", methods=["POST"])
-def collection_cancel(collection_id):
-    store = current_app.extensions["collections"]
-    result = store.get(collection_id)
-    if not result:
-        return jsonify({"error": "Unknown collection"}), 404
-    if result["status"] in {"queued", "running"}:
-        store.update(collection_id, status="cancelled")
-    return jsonify(store.get(collection_id))
-
-
-@bp.route("/collections/<collection_id>/links")
-def collection_links(collection_id):
-    store = current_app.extensions["collections"]
-    if not store.get(collection_id):
-        return jsonify({"error": "Unknown collection"}), 404
-    return jsonify({"urls": [post["url"] for post in store.posts(collection_id)]})
-
-
-@bp.route("/collections/<collection_id>/export.csv")
-def collection_csv(collection_id):
-    store = current_app.extensions["collections"]
-    if not store.get(collection_id):
-        return jsonify({"error": "Unknown collection"}), 404
-    return Response(collector.export_csv(store.posts(collection_id)), content_type="text/csv; charset=utf-8",
-                    headers={"Content-Disposition": 'attachment; filename="tiktok_links.csv"'})
-
-
 @bp.route("/links/import", methods=["POST"])
 def links_import():
     upload = request.files.get("file")
     if not upload:
         return jsonify({"error": "Choose a CSV or TXT file first."}), 400
     try:
-        return jsonify(collector.import_links(upload.read(collector.MAX_IMPORT_BYTES + 1), upload.filename or ""))
-    except collector.CollectionError as exc:
+        return jsonify(links.import_links(upload.read(links.MAX_IMPORT_BYTES + 1), upload.filename or ""))
+    except links.LinkImportError as exc:
         return jsonify({"error": str(exc)}), 400
 
 

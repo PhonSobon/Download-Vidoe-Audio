@@ -82,7 +82,7 @@ def test_same_video_in_another_link_form_is_not_downloaded_twice(monkeypatch, tm
 
 def test_video_key():
     key = downloader.video_key
-    assert key("https://www.tiktok.com/@me/video/123?lang=en") == key("https://m.tiktok.com/@me/photo/123") == "tiktok:123"
+    assert key("https://www.youtube.com/watch?v=abc&t=5") == key("https://youtu.be/abc") == key("https://youtube.com/shorts/abc") == "yt:abc"
     assert key("https://www.facebook.com/reel/987/") == key("https://web.facebook.com/watch/?v=987") == "fb:987"
     assert key("https://example.com/a.mp4#t=5") == "https://example.com/a.mp4"
     assert key("https://example.com/a.mp4") != key("https://example.com/b.mp4")

@@ -24,7 +24,7 @@ const pending = [];
 
 function refreshFormLabels() {
   const n = pending.length;
-  $('linkCount').textContent = n === 1 ? '1 link' : `${n} links`;
+  $('linkCount').textContent = n;
   $('pendingEmpty').style.display = n ? 'none' : '';
   $('clearPending').disabled = !n;
   const what = selectedFormat() === 'mp4' ? 'MP4' : 'MP3';
@@ -47,8 +47,8 @@ function renderPending() {
     if (isPlaylist(url)) {
       const tag = document.createElement('span');
       tag.className = 'tag';
-      tag.textContent = isTikTokProfile(url) ? 'PROFILE' : isChannelTab(url)
-        ? (channelTabUrl(url).endsWith('/shorts') ? 'SHORTS' : 'CHANNEL') : 'PLAYLIST';
+      tag.textContent = isChannelTab(url)
+        ? (channelTabUrl(url).endsWith('/shorts') ? 'SHORTS' : 'CHANNEL') : (collectionLabel(url) || 'PLAYLIST');
       li.append(tag);
     }
     const remove = document.createElement('button');
@@ -108,7 +108,7 @@ $('clearPending').addEventListener('click', () => { pending.length = 0; renderPe
 // A channel page (youtube.com/@name, /@name/videos, /shorts, /streams) is read
 // like a playlist too.
 function isPlaylist(url) {
-  if (isChannelTab(url) || isTikTokProfile(url)) return true;
+  if (isChannelTab(url) || collectionLabel(url)) return true;
   try {
     const u = new URL(url);
     const list = u.searchParams.get('list');
@@ -116,12 +116,21 @@ function isPlaylist(url) {
   } catch { return false; }
 }
 
-// tiktok.com/@name: every post of a TikTok creator.
-function isTikTokProfile(url) {
+// Links on other sites that list many videos, read like a playlist:
+// a Pinterest board, a TikTok profile, a SoundCloud set, a Vimeo showcase or
+// channel, a Dailymotion playlist. Returns the tag shown next to the link.
+function collectionLabel(url) {
   try {
     const u = new URL(url);
-    return u.hostname.replace(/^(www|m)\./, '') === 'tiktok.com' && /^\/@[^/]+\/?$/.test(u.pathname);
-  } catch { return false; }
+    const host = u.hostname.replace(/^(www|m|[a-z]{2})\./, '');
+    const path = u.pathname;
+    if (/^pinterest\.[a-z.]+$/.test(host) && /^\/(?!pin\/|search\/|ideas\/)[^/]+\/[^/]+\/?$/.test(path)) return 'BOARD';
+    if (host === 'tiktok.com' && /^\/@[^/]+\/?$/.test(path)) return 'PROFILE';
+    if (host === 'soundcloud.com' && /^\/[^/]+\/sets\/[^/]+\/?$/.test(path)) return 'PLAYLIST';
+    if (host === 'vimeo.com' && /^\/(showcase|album|channels)\/[^/]+\/?$/.test(path)) return 'PLAYLIST';
+    if (host === 'dailymotion.com' && /^\/playlist\/[^/]+\/?$/.test(path)) return 'PLAYLIST';
+  } catch {}
+  return null;
 }
 
 // A YouTube channel or one of its video tabs: youtube.com/@name,
@@ -209,8 +218,50 @@ goBtn.addEventListener('click', () => {
 });
 renderPending();
 
+// --- Import links from a CSV / TXT file (button or drag & drop) ---
+const linksFile = $('linksFile'), importLinksBtn = $('importLinks'), dropZone = $('dropZone');
+
+async function importLinksFile(file) {
+  if (!file) return;
+  formError.textContent = '';
+  formNote.textContent = '';
+  importLinksBtn.disabled = true;
+  dropZone.classList.add('busy');
+  const body = new FormData();
+  body.append('file', file);
+  try {
+    const res = await fetch('/links/import', { method: 'POST', body });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'The file could not be imported.');
+    const added = addPendingLinks(data.urls);
+    const skipped = data.urls.length - added + (data.skipped || 0);
+    formNote.textContent = `Added ${added} link${added === 1 ? '' : 's'} from ${file.name}` +
+      (skipped ? `; skipped ${skipped} invalid or duplicate row${skipped === 1 ? '' : 's'}.` : '.');
+  } catch (err) {
+    formError.textContent = err.message === 'Failed to fetch' ? 'Lost connection to the server.' : err.message;
+  } finally {
+    importLinksBtn.disabled = false;
+    dropZone.classList.remove('busy');
+    linksFile.value = '';
+  }
+}
+
+importLinksBtn.addEventListener('click', () => linksFile.click());
+linksFile.addEventListener('change', () => importLinksFile(linksFile.files[0]));
+['dragenter', 'dragover'].forEach(type => dropZone.addEventListener(type, e => {
+  e.preventDefault();
+  dropZone.classList.add('over');
+}));
+['dragleave', 'drop'].forEach(type => dropZone.addEventListener(type, () => dropZone.classList.remove('over')));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  importLinksFile(e.dataTransfer.files[0]);
+});
+
 // Same video whatever form its link takes: watch?v=ID, youtu.be/ID, shorts/ID,
-// with or without &t=, &list= etc. Other sites fall back to the link itself.
+// with or without &t=, &list= etc., plus Facebook, Pinterest, TikTok,
+// Instagram, X and Vimeo post ids. Other sites fall back to the link itself.
+// Mirrors video_key() in downloader.py.
 function videoId(url) {
   try {
     const u = new URL(url);
@@ -221,14 +272,30 @@ function videoId(url) {
       const m = u.pathname.match(/^\/(shorts|live|embed)\/([^/]+)/);
       if (m) return 'yt:' + m[2];
     }
-    if (host === 'tiktok.com') {
-      const m = u.pathname.match(/^\/@[^/]+\/(video|photo)\/(\d+)\/?$/);
-      if (m) return 'tiktok:' + m[2];
-    }
     if (host === 'facebook.com' || host.endsWith('.facebook.com')) {
       const m = u.pathname.match(/^\/reel\/(\d+)\/?$/);
       if (m) return 'fb:' + m[1];
       if (u.pathname.replace(/\/$/, '') === '/watch' && u.searchParams.get('v')) return 'fb:' + u.searchParams.get('v');
+    }
+    if (host === 'pinterest.com' || host.endsWith('.pinterest.com')) {
+      const m = u.pathname.match(/^\/pin\/(?:[\w-]+--)?(\d+)\/?$/);
+      if (m) return 'pin:' + m[1];
+    }
+    if (host === 'tiktok.com' || host.endsWith('.tiktok.com')) {
+      const m = u.pathname.match(/^\/@[^/]+\/(?:video|photo)\/(\d+)\/?$/);
+      if (m) return 'tt:' + m[1];
+    }
+    if (host === 'instagram.com' || host === 'ddinstagram.com') {
+      const m = u.pathname.match(/^\/(?:[\w.]+\/)?(?:p|reels?|tv)\/([\w-]+)\/?$/);
+      if (m) return 'ig:' + m[1];
+    }
+    if (host === 'x.com' || host === 'twitter.com' || host === 'mobile.twitter.com') {
+      const m = u.pathname.match(/^\/[^/]+\/status\/(\d+)(?:\/.*)?$/);
+      if (m) return 'x:' + m[1];
+    }
+    if (host === 'vimeo.com') {
+      const m = u.pathname.match(/^\/(\d+)\/?$/);
+      if (m) return 'vimeo:' + m[1];
     }
     u.hash = '';
     return u.href;
@@ -599,7 +666,7 @@ function render() {
   if (items.length) parts.push(`${done.length} of ${items.length} ready`);
   if (active) parts.push(`${active} in progress`);
   if (failed) parts.push(`${failed} failed`);
-  summaryEl.textContent = parts.length ? '· ' + parts.join(' · ') : '';
+  summaryEl.textContent = parts.join(' · ');
 
   clearDoneBtn.disabled = done.length + failed === 0;
   retryFailedBtn.style.display = failed ? '' : 'none';
