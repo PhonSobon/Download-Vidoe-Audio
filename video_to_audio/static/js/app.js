@@ -308,14 +308,16 @@ function videoId(url) {
 // { title, index, thumbnail, duration, channel }.
 // `playlist` is "Playlist - Channel" for the playlist the video came from, if any.
 // `captions`: also save the video's timed captions (.vtt).
-function addVideo(url, fmt, limit, video = {}, playlist, captions = false) {
+// `folder`: subfolder of the server's save folder for this video (playlist or
+// channel name); without it the server uses the video's channel.
+function addVideo(url, fmt, limit, video = {}, playlist, captions = false, folder) {
   const id = videoId(url);
   if (items.some(i => i.videoId === id && i.fmt === fmt)) return null;
   const { title, index, duration, channel } = video;
   // YouTube thumbnails can be shown straight away, before the download starts.
   const thumbnail = video.thumbnail || (id.startsWith('yt:') ? `https://i.ytimg.com/vi/${id.slice(3)}/mqdefault.jpg` : null);
   const item = { key: nextKey++, url, videoId: id, fmt, limit, title, index, thumbnail, duration, channel,
-                 playlist, captions, status: 'starting', progress: 0 };
+                 playlist, captions, folder, status: 'starting', progress: 0 };
   items.push(item);
   createRow(item);
   start(item);
@@ -356,6 +358,9 @@ async function loadPlaylist(pl, count) {
     pl.channel = data.channel || pl.channel;
     // "Playlist - Channel", used to name the zip of its files.
     const zipName = [pl.title, pl.channel].filter(Boolean).join(' - ');
+    // Server save folder: the channel's name for a channel link (its title is
+    // just "<Channel> - Videos"), else the playlist's "Playlist - Channel".
+    const folder = (isChannelTab(pl.url) && pl.channel) || zipName;
     pl.total = data.total;
     pl.next = data.next_start;
     pl.added += data.videos.length;
@@ -363,7 +368,7 @@ async function loadPlaylist(pl, count) {
     // Prepend in reverse so the queue shows the playlist in its original order.
     let skipped = 0;
     for (const v of [...data.videos].reverse()) {
-      if (!addVideo(v.url, pl.fmt, pl.limit, v, zipName, pl.captions)) skipped++;
+      if (!addVideo(v.url, pl.fmt, pl.limit, v, zipName, pl.captions, folder)) skipped++;
     }
     noteSkipped(skipped);
     if (data.has_more && !playlists.includes(pl)) playlists.push(pl);
@@ -457,7 +462,8 @@ async function submitDownload(item) {
     const res = await fetch('/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: item.url, format: item.fmt, limit_minutes: item.limit, captions: !!item.captions })
+      body: JSON.stringify({ url: item.url, format: item.fmt, limit_minutes: item.limit, captions: !!item.captions,
+                             folder: item.folder || null })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Something went wrong.');
@@ -497,6 +503,8 @@ async function pollDownloads() {
         if (data.title) item.title = data.title;
         item.captionFiles = data.captions || [];
         item.captionError = data.caption_error;
+        item.savedTo = data.saved_to;
+        item.saveError = data.save_error;
         const card = data.card || {};
         for (const k of ['thumbnail', 'duration', 'channel']) if (card[k] && !item[k]) item[k] = card[k];
         updateRow(item);
@@ -576,7 +584,7 @@ function updateRow(item) {
     queued: 'Waiting for a free slot…',
     downloading: item.progress ? `Downloading… ${Math.floor(item.progress)}%` : 'Fetching video info…',
     processing: item.fmt === 'mp3' ? 'Converting to MP3…' : 'Merging video and audio…',
-    done: `Ready · ${hostOf(item.url)}` + captionNote(item) + (item.hfRepo ? ` · On Hugging Face (${item.hfRepo})` : ''),
+    done: `Ready · ${hostOf(item.url)}` + captionNote(item) + saveNote(item) + (item.hfRepo ? ` · On Hugging Face (${item.hfRepo})` : ''),
     error: item.error || 'Failed',
   };
   line.textContent = labels[item.status] || item.status;
@@ -637,6 +645,12 @@ function captionNote(item) {
   const n = (item.captionFiles || []).length;
   if (n) return ` · ${n} caption file${n > 1 ? 's' : ''}`;
   return item.captionError ? ` · ${item.captionError}` : '';
+}
+
+// Where the server kept its own copy of the file (Config.SAVE_DIR).
+function saveNote(item) {
+  if (item.saveError) return ` · ${item.saveError}`;
+  return item.savedTo ? ` · Saved to ${item.savedTo.split(/[\\/]/).pop()}` : '';
 }
 
 function removeItem(item) {

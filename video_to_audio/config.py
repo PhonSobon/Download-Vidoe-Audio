@@ -15,6 +15,12 @@ class Config:
     DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", os.path.join(tempfile.gettempdir(), "video_to_audio"))
     FILE_LIFETIME_MINUTES = float(os.environ.get("FILE_LIFETIME_MINUTES", "60"))
 
+    # Every finished download is also copied here to keep, in a subfolder named
+    # after its playlist or YouTube channel (single videos: the video's channel),
+    # with a metadata.csv per subfolder. Set SAVE_DIR to an empty value to
+    # turn this off. The zip / per-file downloads on the page are unchanged.
+    SAVE_DIR = os.environ.get("SAVE_DIR", r"D:\Data-ASR-Audio\02.MPTC-ASR-RAW\SynologyDrive\Raw-Datasets-Audio")
+
     # When many links are submitted at once, only this many download at the
     # same time; the rest wait in "queued" until a slot frees up. Keeps the
     # machine and the network (and YouTube's rate limits) from being overwhelmed.

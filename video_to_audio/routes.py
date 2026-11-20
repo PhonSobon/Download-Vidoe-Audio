@@ -67,7 +67,8 @@ def generate():
         new_id = uuid.uuid4().hex[:12]
         # The same video already queued or downloaded reuses that job.
         job_id = start_download(new_id, url, fmt, limit_minutes, current_app.config["DOWNLOAD_DIR"],
-                                captions=data.get("captions") is True)
+                                captions=data.get("captions") is True,
+                                folder=str(data.get("folder") or "").strip() or None)
         return jsonify({"job_id": job_id, "duplicate": job_id != new_id})
     except Exception as e:
         # Catch-all so the browser always gets JSON, never an HTML crash page
@@ -141,7 +142,8 @@ def statuses():
     ids = data.get("ids") if isinstance(data, dict) else None
     if not isinstance(ids, list) or len(ids) > 1000 or not all(isinstance(job_id, str) for job_id in ids):
         return jsonify({"error": "Send up to 1,000 job IDs."}), 400
-    fields = ("status", "progress", "title", "error", "card", "captions", "caption_error")
+    fields = ("status", "progress", "title", "error", "card", "captions", "caption_error",
+              "saved_to", "save_error")
     return jsonify({"jobs": {job_id: {key: JOBS[job_id].get(key) for key in fields}
                               if job_id in JOBS else None for job_id in ids}})
 

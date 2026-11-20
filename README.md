@@ -106,6 +106,7 @@ app:
 | `MAX_PARALLEL_DOWNLOADS` | `3` | Links that download at the same time |
 | `DOWNLOAD_DIR` | `video_to_audio` in the system temp folder | Working folder for files waiting to be saved; its contents are deleted automatically |
 | `FILE_LIFETIME_MINUTES` | `60` | How long a finished file stays available on the page before it's deleted |
+| `SAVE_DIR` | `D:\Data-ASR-Audio\02.MPTC-ASR-RAW\SynologyDrive\Raw-Datasets-Audio` | Every finished download (and its captions) is also copied here to keep, in a subfolder per playlist (`Playlist - Channel`) or channel; single videos go in their channel's folder. Each subfolder gets a `metadata.csv`. Set it empty to turn this off |
 | `HOST` / `PORT` | `127.0.0.1` / `5000` | Address the server listens on |
 | `HF_TOKEN` | not set | Hugging Face token used when the HF_TOKEN box is left blank |
 | `COOKIES_FILE` | `cookies.txt` in this folder | Where the YouTube cookies uploaded on the page are kept |

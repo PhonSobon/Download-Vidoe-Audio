@@ -16,6 +16,14 @@ def cookies_file(tmp_path, monkeypatch):
     return path
 
 
+@pytest.fixture(autouse=True)
+def save_dir(tmp_path, monkeypatch):
+    """Keep tests away from the real save folder on drive D:."""
+    path = str(tmp_path / "saved")
+    monkeypatch.setattr(Config, "SAVE_DIR", path)
+    return path
+
+
 @pytest.fixture
 def download_dir(tmp_path):
     return str(tmp_path / "downloads")

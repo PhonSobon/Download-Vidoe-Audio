@@ -4,6 +4,7 @@ import csv
 import io
 import os
 import re
+import shutil
 import threading
 import time
 from datetime import datetime, timezone
@@ -205,17 +206,20 @@ def find_duplicate(url: str, fmt: str, limit_minutes: float | None, download_dir
 
 
 def start_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, download_dir: str,
-                   captions: bool = False) -> str:
+                   captions: bool = False, folder: str | None = None) -> str:
     """Queue a download and return its job id. If the same video is already
     queued, downloading or downloaded (same format, clip and captions), no new
-    download starts and that job's id is returned instead."""
+    download starts and that job's id is returned instead. folder names the
+    subfolder of Config.SAVE_DIR the finished files are copied to (the
+    playlist or channel); without it the video's own channel is used."""
     with DUPLICATE_LOCK:
         existing = find_duplicate(url, fmt, limit_minutes, download_dir, captions)
         if existing:
             return existing
         JOBS[job_id] = {"status": "queued", "filename": None, "error": None,
                         "progress": 0, "title": None, "url": url, "want_captions": captions,
-                        "key": video_key(url), "fmt": fmt, "limit_minutes": limit_minutes}
+                        "key": video_key(url), "fmt": fmt, "limit_minutes": limit_minutes,
+                        "folder": folder}
     # A large CSV uses a fixed number of workers rather than a thread per URL.
     global DOWNLOAD_WORKERS_STARTED
     with DOWNLOAD_WORKERS_LOCK:
@@ -403,10 +407,18 @@ def _run_download(job_id: str, url: str, fmt: str, limit_minutes: float | None, 
         if captions and not JOBS[job_id]["captions"] and not JOBS[job_id].get("caption_error"):
             JOBS[job_id]["caption_error"] = "This video has no captions."
 
-        JOBS[job_id]["status"] = "done"
         JOBS[job_id]["filename"] = produced_file
         JOBS[job_id]["title"] = title
         JOBS[job_id]["format"] = expected_ext
+        if Config.SAVE_DIR:
+            try:
+                JOBS[job_id]["saved_to"] = save_to_folder(JOBS[job_id], download_dir, Config.SAVE_DIR)
+            except OSError as exc:
+                # e.g. drive D: missing or the sync folder offline. The file is
+                # still downloadable from the page, so the job doesn't fail.
+                JOBS[job_id]["save_error"] = f"Couldn't save a copy to {Config.SAVE_DIR}: {exc}"
+
+        JOBS[job_id]["status"] = "done"
         JOBS[job_id]["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         JOBS[job_id]["done_at"] = time.time()
 
@@ -459,6 +471,19 @@ METADATA_FIELDS = ["file", "caption_files", "title", "description", "url", "chan
                    "upload_date", "duration_seconds"]
 
 
+def _metadata_row(job: dict, filename: str | None = None, caption_files: list[str] | None = None) -> dict:
+    src = job.get("source") or {}
+    if caption_files is None:
+        caption_files = [c["filename"] for c in job.get("captions") or []]
+    row = {"file": filename or job["filename"], "caption_files": " | ".join(caption_files),
+           "title": job.get("title"), "description": job.get("description"),
+           "url": src.get("url") or job.get("url"), "channel": src.get("channel"),
+           "upload_date": src.get("upload_date"), "duration_seconds": src.get("duration")}
+    # Captions may start with spreadsheet formulas. Export them as text.
+    return {k: "'" + v if isinstance(v, str) and v.startswith(("=", "+", "-", "@", "\t", "\r"))
+            else v for k, v in row.items()}
+
+
 def metadata_csv(jobs: list[dict]) -> str:
     """A metadata.csv for a zip: one row per file with the post's caption text
     and the names of its timed caption (.vtt) files."""
@@ -466,16 +491,56 @@ def metadata_csv(jobs: list[dict]) -> str:
     writer = csv.DictWriter(output, fieldnames=METADATA_FIELDS)
     writer.writeheader()
     for job in jobs:
-        src = job.get("source") or {}
-        row = {"file": job["filename"],
-               "caption_files": " | ".join(c["filename"] for c in job.get("captions") or []),
-               "title": job.get("title"), "description": job.get("description"),
-               "url": src.get("url") or job.get("url"), "channel": src.get("channel"),
-               "upload_date": src.get("upload_date"), "duration_seconds": src.get("duration")}
-        # Captions may start with spreadsheet formulas. Export them as text.
-        writer.writerow({k: "'" + v if isinstance(v, str) and v.startswith(("=", "+", "-", "@", "\t", "\r"))
-                         else v for k, v in row.items()})
+        writer.writerow(_metadata_row(job))
     return "\ufeff" + output.getvalue()
+
+
+def save_folder_name(job: dict) -> str:
+    """The subfolder a job's files are kept in: the playlist or channel the
+    page queued it from, else the video's channel, else its platform."""
+    src = job.get("source") or {}
+    name = job.get("folder") or src.get("channel") or src.get("platform") or ""
+    name = re.sub(r"\s+", " ", BAD_FILENAME_CHARS.sub(" ", name)).strip()[:MAX_TITLE_LENGTH].rstrip(". ")
+    return name if name and name.upper() not in WINDOWS_RESERVED else "Other videos"
+
+
+# Two downloads finishing together may both copy into, and add rows to, one folder.
+SAVE_LOCK = threading.Lock()
+
+
+def save_to_folder(job: dict, download_dir: str, save_dir: str) -> str:
+    """Copy a finished job's media file and captions into
+    save_dir/<playlist or channel>/ and add its row to that folder's
+    metadata.csv. Returns the folder path. A file with the same name and size
+    already there is taken to be this same video, so nothing is copied twice."""
+    folder = os.path.join(save_dir, save_folder_name(job))
+    media = job["filename"]
+    base, ext = os.path.splitext(media)
+    with SAVE_LOCK:
+        os.makedirs(folder, exist_ok=True)
+        new_base, n = base, 2
+        while os.path.exists(os.path.join(folder, new_base + ext)):
+            if os.path.getsize(os.path.join(folder, new_base + ext)) == \
+                    os.path.getsize(os.path.join(download_dir, media)):
+                return folder  # already saved
+            new_base, n = f"{base} ({n})", n + 1
+        caption_files = []
+        for caption in job.get("captions") or []:
+            # "Title.khm-KH.vtt" follows the media file's new name.
+            name = new_base + caption["filename"][len(base):]
+            shutil.copyfile(os.path.join(download_dir, caption["filename"]), os.path.join(folder, name))
+            caption_files.append(name)
+        # Media last: its presence is what marks the video as saved.
+        shutil.copyfile(os.path.join(download_dir, media), os.path.join(folder, new_base + ext))
+
+        csv_path = os.path.join(folder, "metadata.csv")
+        new_file = not os.path.exists(csv_path)
+        with open(csv_path, "a", encoding="utf-8-sig" if new_file else "utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=METADATA_FIELDS)
+            if new_file:
+                writer.writeheader()
+            writer.writerow(_metadata_row(job, new_base + ext, caption_files))
+    return folder
 
 
 def delete_old_files(download_dir: str, max_age_seconds: float):
